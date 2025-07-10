@@ -4,7 +4,7 @@
 
 CONFIG_FILE="configs/config.yaml"
 OUTPUT_DIR="./outputs"
-NUM_GPUS=1
+NUM_GPUS=8
 
 if [[ $NUM_GPUS -eq 1 ]]; then
     python training/deepspeed_trainer.py \

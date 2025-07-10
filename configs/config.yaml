@@ -10,7 +10,8 @@ data:
 
 training:
   epochs:          10
-  batch_size:      16
+  batch_size:      16  # micro batch size per GPU
+  gradient_accumulation_steps: 4  # effective batch size = batch_size * gradient_accumulation_steps * num_gpus
   lr:              2e-5
   weight_decay:    0.01
   warmup_steps:    500
@@ -28,5 +29,5 @@ deepspeed:
   
 # Legacy accelerate settings (for compatibility)
 accelerate:
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 4  # Updated to match training config
   fp16: true
