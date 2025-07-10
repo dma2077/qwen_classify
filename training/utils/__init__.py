@@ -2,7 +2,8 @@
 from .model_utils import save_hf_model
 from .distributed import DistributedContext
 from .monitor import TrainingMonitor
-from .evaluation import evaluate_model, prepare_config
+from .evaluation import evaluate_model
+from .config_utils import prepare_config
 
 __all__ = [
     'save_hf_model',

@@ -87,7 +87,7 @@ def main():
     config['output_dir'] = output_dir
     
     # 提前准备配置参数（参数映射等）
-    from training.utils.evaluation import prepare_config
+    from training.utils.config_utils import prepare_config
     config = prepare_config(config)
     
     # 设置模型
