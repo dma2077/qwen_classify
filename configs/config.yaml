@@ -14,7 +14,7 @@ training:
   output_dir:      "./outputs"
   logging_steps:   50
   save_steps:      1000
-  num_workers:     4
+  num_workers:     0  # Set to 0 to avoid multiprocessing issues
   use_fused_adam:  true  # Use FusedAdam for better performance
   # Note: micro_batch_size_per_gpu and gradient_accumulation_steps are now in ds_s2.json
 

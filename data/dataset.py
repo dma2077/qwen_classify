@@ -11,12 +11,31 @@ class BaseDataset(Dataset):
 
     def __getitem__(self, idx):
         image_path, messages, label = self.data_list[idx]
-        image = Image.open(image_path).convert("RGB")
-        return {
-            "image": image,
-            "messages": messages,
-            "label": label,
-        }
+        try:
+            # 检查文件是否存在
+            if not os.path.exists(image_path):
+                raise FileNotFoundError(f"Image file not found: {image_path}")
+            
+            # 加载并验证图像
+            image = Image.open(image_path).convert("RGB")
+            
+            # 确保图像不为空且有合理的尺寸
+            if image.size[0] == 0 or image.size[1] == 0:
+                raise ValueError(f"Invalid image size: {image.size}")
+            
+            # 检查图像模式
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+            
+            return {
+                "image": image,
+                "messages": messages,
+                "label": label,
+            }
+        except Exception as e:
+            print(f"Error loading image at index {idx}, path {image_path}: {e}")
+            print(f"Image exists: {os.path.exists(image_path) if image_path else 'Path is None'}")
+            raise
     
 class MyFoodDataset(BaseDataset):
     def __init__(self, split_file):
