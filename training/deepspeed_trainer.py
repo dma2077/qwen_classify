@@ -289,7 +289,7 @@ def train(args):
     train_loader = build_dataloader(
         split_file=config["data"]["train_jsonl"],
         pretrained_model_name=config["model"]["pretrained_name"],
-        batch_size=config["training"]["batch_size"],
+        batch_size=config["training"]["micro_batch_size_per_gpu"],
         num_workers=config["training"]["num_workers"],
         shuffle=True,
     )
@@ -297,7 +297,7 @@ def train(args):
     eval_loader = build_dataloader(
         split_file=config["data"]["val_jsonl"],
         pretrained_model_name=config["model"]["pretrained_name"],
-        batch_size=config["training"]["batch_size"],
+        batch_size=config["training"]["micro_batch_size_per_gpu"],
         num_workers=config["training"]["num_workers"],
         shuffle=False,
     )
@@ -335,11 +335,16 @@ def train(args):
     )
     
     # Initialize DeepSpeed engine
+    # Set training parameters that DeepSpeed will use to resolve "auto" values
+    args.train_micro_batch_size_per_gpu = config["training"]["micro_batch_size_per_gpu"]
+    args.gradient_accumulation_steps = config["training"]["gradient_accumulation_steps"]
+    
     model, optimizer, _, lr_scheduler = deepspeed.initialize(
         args=args,
         model=model,
         optimizer=optimizer,
-        lr_scheduler=lr_scheduler
+        lr_scheduler=lr_scheduler,
+        training_data=train_loader
     )
     
     if ctx.rank == 0:

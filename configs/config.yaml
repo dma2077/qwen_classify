@@ -1,5 +1,5 @@
 model:
-  pretrained_name: "Qwen2.5-VL-Chat"  # or your本地路径
+  pretrained_name: "/llm_reco/dehua/model/Qwen2.5-VL-7B-Instruct"  # or your本地路径
   num_labels: 101
 
 data:
@@ -8,8 +8,8 @@ data:
 
 training:
   epochs:          10
-  batch_size:      16  # micro batch size per GPU
-  gradient_accumulation_steps: 4  # effective batch size = batch_size * gradient_accumulation_steps * num_gpus
+  micro_batch_size_per_gpu: 16  # micro batch size per GPU
+  gradient_accumulation_steps: 4  # effective batch size = micro_batch_size_per_gpu * gradient_accumulation_steps * num_gpus
   lr:              2e-5
   weight_decay:    0.01
   warmup_steps:    500
@@ -21,7 +21,7 @@ training:
 
 # DeepSpeed specific settings
 deepspeed:
-  config_file: "configs/deepspeed_config.json"
+  config_file: "configs/ds_s2.json"
   zero_stage: 2
   fp16: true
   
