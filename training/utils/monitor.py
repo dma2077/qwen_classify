@@ -8,10 +8,19 @@ def make_json_serializable(obj):
     """确保对象可以JSON序列化"""
     if isinstance(obj, torch.Tensor):
         return float(obj.item()) if obj.numel() == 1 else obj.tolist()
-    elif isinstance(obj, (torch.float32, torch.float64)):
-        return float(obj)
-    elif isinstance(obj, (torch.int32, torch.int64)):
-        return int(obj)
+    elif torch.is_tensor(obj):
+        # 处理其他torch tensor类型
+        return float(obj.item()) if obj.numel() == 1 else obj.tolist()
+    elif hasattr(obj, 'dtype') and 'torch' in str(type(obj)):
+        # 处理torch的标量类型
+        if 'float' in str(obj.dtype):
+            return float(obj)
+        elif 'int' in str(obj.dtype):
+            return int(obj)
+        else:
+            return float(obj)
+    elif isinstance(obj, (float, int)):
+        return obj
     elif isinstance(obj, dict):
         return {k: make_json_serializable(v) for k, v in obj.items()}
     elif isinstance(obj, (list, tuple)):
