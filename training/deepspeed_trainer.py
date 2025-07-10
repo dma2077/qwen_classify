@@ -335,7 +335,8 @@ def train(args):
     )
     
     # Initialize DeepSpeed engine
-    # Set training parameters that DeepSpeed will use to resolve "auto" values
+    # Set training parameters from config.yaml
+    args.train_batch_size = config["training"]["micro_batch_size_per_gpu"] * config["training"]["gradient_accumulation_steps"] * ctx.world_size
     args.train_micro_batch_size_per_gpu = config["training"]["micro_batch_size_per_gpu"]
     args.gradient_accumulation_steps = config["training"]["gradient_accumulation_steps"]
     
@@ -343,8 +344,7 @@ def train(args):
         args=args,
         model=model,
         optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-        training_data=train_loader
+        lr_scheduler=lr_scheduler
     )
     
     if ctx.rank == 0:
