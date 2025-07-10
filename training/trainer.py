@@ -9,7 +9,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 from data.dataloader import build_dataloader
-from training.models import load_config, build_model
+from training.model import load_config, build_model
 from optimizer.optimizer import build_optimizer
 from training.lr_scheduler import build_scheduler
 
@@ -44,14 +44,14 @@ def main():
     train_loader = build_dataloader(
         split_file=cfg["data"]["train_jsonl"],
         pretrained_model_name=cfg["model"]["pretrained_name"],
-        batch_size=cfg["training"]["batch_size"],
+        batch_size=cfg["training"]["micro_batch_size_per_gpu"],
         num_workers=cfg["training"]["num_workers"],
         shuffle=True,
     )
     eval_loader = build_dataloader(
         split_file=cfg["data"]["val_jsonl"],
         pretrained_model_name=cfg["model"]["pretrained_name"],
-        batch_size=cfg["training"]["batch_size"],
+        batch_size=cfg["training"]["micro_batch_size_per_gpu"],
         num_workers=cfg["training"]["num_workers"],
         shuffle=False,
     )
@@ -73,8 +73,8 @@ def main():
     # 4. Prepare TrainingArguments
     training_args = TrainingArguments(
         output_dir=cfg["training"]["output_dir"],
-        per_device_train_batch_size=cfg["training"]["batch_size"],
-        per_device_eval_batch_size=cfg["training"]["batch_size"],
+        per_device_train_batch_size=cfg["training"]["micro_batch_size_per_gpu"],
+        per_device_eval_batch_size=cfg["training"]["micro_batch_size_per_gpu"],
         gradient_accumulation_steps=cfg["training"].get("gradient_accumulation_steps", 1),
         num_train_epochs=cfg["training"]["epochs"],
         learning_rate=cfg["training"]["lr"],
