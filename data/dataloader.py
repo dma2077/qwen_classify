@@ -1,8 +1,9 @@
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoProcessor
 from .dataset import MyFoodDataset
 from .collator import create_collate_fn
 import json
+import torch.distributed as dist
 
 def create_dataloaders(config):
     """创建训练和验证数据加载器"""
@@ -38,24 +39,51 @@ def create_dataloaders(config):
     val_dataset = MyFoodDataset(val_jsonl)
     val_collate_fn = create_collate_fn(processor)
     
+    # 检查是否使用分布式训练
+    use_distributed = dist.is_available() and dist.is_initialized()
+    
+    # 创建分布式采样器（如果使用分布式训练）
+    if use_distributed:
+        train_sampler = DistributedSampler(
+            train_dataset,
+            shuffle=True,
+            drop_last=True  # 确保所有GPU处理相同数量的批次
+        )
+        val_sampler = DistributedSampler(
+            val_dataset,
+            shuffle=False,
+            drop_last=False
+        )
+        shuffle_train = False  # 分布式采样器已经处理了shuffle
+        shuffle_val = False
+    else:
+        train_sampler = None
+        val_sampler = None
+        shuffle_train = True
+        shuffle_val = False
+    
     # 创建训练数据加载器
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle_train,
+        sampler=train_sampler,
         num_workers=num_workers,
         collate_fn=train_collate_fn,
         pin_memory=True,
+        drop_last=True  # 确保批次大小一致
     )
     
     # 创建验证数据加载器
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=shuffle_val,
+        sampler=val_sampler,
         num_workers=num_workers,
         collate_fn=val_collate_fn,
         pin_memory=True,
+        drop_last=False
     )
     
     return train_loader, val_loader

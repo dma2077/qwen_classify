@@ -42,8 +42,4 @@ def create_optimizer(model, config):
     
     optimizer = AdamW(grouped)
     
-    # 验证优化器参数组
-    for i, param_group in enumerate(optimizer.param_groups):
-        print(f"参数组 {i}: lr={param_group['lr']} (type: {type(param_group['lr'])})")
-    
     return optimizer

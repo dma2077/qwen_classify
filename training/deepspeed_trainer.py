@@ -91,23 +91,38 @@ class DeepSpeedTrainer:
         save_steps = self.config['save_steps']
         eval_steps = self.config['eval_steps']
         
-        # 计算有效训练步数（考虑DeepSpeed的梯度累积）
+        # 计算有效训练步数（考虑DeepSpeed的分布式训练和梯度累积）
         deepspeed_config = self.config.get('deepspeed', {})
         if isinstance(deepspeed_config, str):
             import json
             with open(deepspeed_config, 'r') as f:
                 deepspeed_config = json.load(f)
         
+        # 获取DeepSpeed参数
+        micro_batch_size_per_gpu = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
         gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
-        effective_steps_per_epoch = len(self.train_loader) // gradient_accumulation_steps
+        train_batch_size = deepspeed_config.get('train_batch_size', 32)
+        
+        # 计算有效训练步数（基于实际的DataLoader长度）
+        dataloader_steps_per_epoch = len(self.train_loader)
+        effective_steps_per_epoch = dataloader_steps_per_epoch // gradient_accumulation_steps
         total_effective_steps = effective_steps_per_epoch * num_epochs
         
         # 创建进度条（基于有效训练步数）
         pbar = tqdm(total=total_effective_steps, desc="Training Steps", disable=not self.dist_ctx.is_main_process)
         
-        self.dist_ctx.print_main(f"DataLoader步数每epoch: {len(self.train_loader)}")
-        self.dist_ctx.print_main(f"有效训练步数每epoch: {effective_steps_per_epoch}")
-        self.dist_ctx.print_main(f"总有效训练步数: {total_effective_steps}")
+        # 计算验证信息
+        dataset_size = len(self.train_loader.dataset)
+        samples_per_gpu = dataloader_steps_per_epoch * micro_batch_size_per_gpu
+        
+        self.dist_ctx.print_main(f"总数据集大小: {dataset_size:,}")
+        self.dist_ctx.print_main(f"每GPU处理样本数: {samples_per_gpu:,}")
+        self.dist_ctx.print_main(f"每GPU微批次大小: {micro_batch_size_per_gpu}")
+        self.dist_ctx.print_main(f"梯度累积步数: {gradient_accumulation_steps}")
+        self.dist_ctx.print_main(f"总有效批次大小: {train_batch_size}")
+        self.dist_ctx.print_main(f"每GPU DataLoader步数: {dataloader_steps_per_epoch:,}")
+        self.dist_ctx.print_main(f"有效训练步数每epoch: {effective_steps_per_epoch:,}")
+        self.dist_ctx.print_main(f"总有效训练步数: {total_effective_steps:,}")
         
         effective_step = 0  # 用于跟踪有效步数
         
@@ -175,12 +190,12 @@ class DeepSpeedTrainer:
                     )
                 
                 # 定期评估（基于有效步数）
-                if effective_step % (eval_steps // gradient_accumulation_steps) == 0 and effective_step > 0:
+                if effective_step > 0 and effective_step % eval_steps == 0:
                     self.evaluate()
                     self.model.train()
                 
                 # 定期保存检查点（基于有效步数）
-                if effective_step % (save_steps // gradient_accumulation_steps) == 0 and effective_step > 0:
+                if effective_step > 0 and effective_step % save_steps == 0:
                     self.save_checkpoint(effective_step)
             
             # Epoch结束统计

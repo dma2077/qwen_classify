@@ -12,7 +12,7 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     if isinstance(num_epochs, str):
         num_epochs = int(num_epochs)
     
-    # 计算有效训练步数（考虑DeepSpeed的梯度累积）
+    # 计算有效训练步数（考虑DeepSpeed的分布式训练和梯度累积）
     # 获取DeepSpeed配置
     deepspeed_config = config.get('deepspeed', {})
     if isinstance(deepspeed_config, str):
@@ -20,17 +20,21 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
         with open(deepspeed_config, 'r') as f:
             deepspeed_config = json.load(f)
     
-    # 获取梯度累积步数
+    # 获取DeepSpeed参数
+    micro_batch_size_per_gpu = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
     gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
+    train_batch_size = deepspeed_config.get('train_batch_size', 32)
     
-    # 计算有效步数：实际步数 / 梯度累积步数
+    # 计算有效训练步数（基于DataLoader步数和梯度累积）
     effective_steps_per_epoch = steps_per_epoch // gradient_accumulation_steps
     num_training_steps = effective_steps_per_epoch * num_epochs
     
-    print(f"DataLoader步数每epoch: {steps_per_epoch}")
+    print(f"每GPU微批次大小: {micro_batch_size_per_gpu}")
     print(f"梯度累积步数: {gradient_accumulation_steps}")
-    print(f"有效训练步数每epoch: {effective_steps_per_epoch}")
-    print(f"总有效训练步数: {num_training_steps}")
+    print(f"总有效批次大小: {train_batch_size}")
+    print(f"每GPU DataLoader步数: {steps_per_epoch:,}")
+    print(f"有效训练步数每epoch: {effective_steps_per_epoch:,}")
+    print(f"总有效训练步数: {num_training_steps:,}")
     
     return get_cosine_schedule_with_warmup(
         optimizer,
