@@ -8,8 +8,6 @@ data:
 
 training:
   epochs:          10
-  micro_batch_size_per_gpu: 16  # micro batch size per GPU
-  gradient_accumulation_steps: 4  # effective batch size = micro_batch_size_per_gpu * gradient_accumulation_steps * num_gpus
   lr:              2e-5
   weight_decay:    0.01
   warmup_steps:    500
@@ -18,12 +16,13 @@ training:
   save_steps:      1000
   num_workers:     4
   use_fused_adam:  true  # Use FusedAdam for better performance
+  # Note: micro_batch_size_per_gpu and gradient_accumulation_steps are now in ds_s2.json
 
 # DeepSpeed specific settings
 deepspeed:
   config_file: "configs/ds_s2.json"
   zero_stage: 2
-  fp16: true
+  bf16: true  # Using BF16 instead of FP16
   
 # Weights & Biases configuration
 wandb:
@@ -35,5 +34,5 @@ wandb:
 
 # Legacy accelerate settings (for compatibility)
 accelerate:
-  gradient_accumulation_steps: 4  # Updated to match training config
-  fp16: true
+  bf16: true  # Using BF16 instead of FP16
+  # Note: gradient_accumulation_steps is now managed by DeepSpeed (ds_s2.json)

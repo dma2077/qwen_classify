@@ -282,6 +282,12 @@ def train(args):
     # Prepare configuration
     config = prepare_config(args, ctx, config)
     
+    # Load DeepSpeed config to get batch size
+    with open(args.deepspeed_config, 'r') as f:
+        ds_config = json.load(f)
+    
+    micro_batch_size = ds_config["train_micro_batch_size_per_gpu"]
+    
     # Build dataloaders
     if ctx.rank == 0:
         logger.info("Building dataloaders...")
@@ -289,7 +295,7 @@ def train(args):
     train_loader = build_dataloader(
         split_file=config["data"]["train_jsonl"],
         pretrained_model_name=config["model"]["pretrained_name"],
-        batch_size=config["training"]["micro_batch_size_per_gpu"],
+        batch_size=micro_batch_size,
         num_workers=config["training"]["num_workers"],
         shuffle=True,
     )
@@ -297,7 +303,7 @@ def train(args):
     eval_loader = build_dataloader(
         split_file=config["data"]["val_jsonl"],
         pretrained_model_name=config["model"]["pretrained_name"],
-        batch_size=config["training"]["micro_batch_size_per_gpu"],
+        batch_size=micro_batch_size,
         num_workers=config["training"]["num_workers"],
         shuffle=False,
     )
@@ -335,20 +341,11 @@ def train(args):
     )
     
     # Initialize DeepSpeed engine
-    # Load base DeepSpeed config and add parameters from config.yaml
-    with open(args.deepspeed_config, 'r') as f:
-        ds_config = json.load(f)
-    
-    # Add training parameters from config.yaml
-    ds_config["train_batch_size"] = config["training"]["micro_batch_size_per_gpu"] * config["training"]["gradient_accumulation_steps"] * ctx.world_size
-    ds_config["train_micro_batch_size_per_gpu"] = config["training"]["micro_batch_size_per_gpu"]
-    ds_config["gradient_accumulation_steps"] = config["training"]["gradient_accumulation_steps"]
-    
     model, optimizer, _, lr_scheduler = deepspeed.initialize(
+        args=args,
         model=model,
         optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-        config=ds_config
+        lr_scheduler=lr_scheduler
     )
     
     if ctx.rank == 0:
