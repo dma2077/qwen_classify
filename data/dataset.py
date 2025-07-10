@@ -29,13 +29,13 @@ class MyFoodDataset(BaseDataset):
                 img_path = item.get("image_path")
                 label = int(item.get("label"))
                 dataset_name = item.get("dataset_name")
-                # 构造 HF chat-format messages
+                # 构造 HF chat-format messages (Qwen2.5-VL格式)
                 messages = [
                     {
                         "role": "user",
                         "content": [
                             {"type": "image", "image": img_path},
-                            {"type": "text",  "text": f"This is a image of {dataset_name}, what dish is it?"},
+                            {"type": "text", "text": f"This is an image of {dataset_name}, what dish is it?"},
                         ],
                     }
                 ]

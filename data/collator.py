@@ -10,13 +10,19 @@ def create_collate_fn(processor):
         labels = torch.tensor([item["label"] for item in batch], dtype=torch.long)
 
         # 1) 先把 messages 转成 chat 文本模板
-        text_list = [
-            processor.apply_chat_template(
-                messages=m,
-                tokenize=False,
-                add_generation_prompt=True
-            ) for m in msgs
-        ]
+        text_list = []
+        for i, m in enumerate(msgs):
+            try:
+                text = processor.apply_chat_template(
+                    conversation=m,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+                text_list.append(text)
+            except Exception as e:
+                print(f"Error processing message {i}: {e}")
+                print(f"Message format: {m}")
+                raise
 
         # 2) 调用 processor 取得张量
         enc = processor(
