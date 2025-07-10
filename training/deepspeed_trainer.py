@@ -91,9 +91,25 @@ class DeepSpeedTrainer:
         save_steps = self.config['save_steps']
         eval_steps = self.config['eval_steps']
         
-        # 创建进度条
-        total_steps = len(self.train_loader) * num_epochs
-        pbar = tqdm(total=total_steps, desc="Training", disable=not self.dist_ctx.is_main_process)
+        # 计算有效训练步数（考虑DeepSpeed的梯度累积）
+        deepspeed_config = self.config.get('deepspeed', {})
+        if isinstance(deepspeed_config, str):
+            import json
+            with open(deepspeed_config, 'r') as f:
+                deepspeed_config = json.load(f)
+        
+        gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
+        effective_steps_per_epoch = len(self.train_loader) // gradient_accumulation_steps
+        total_effective_steps = effective_steps_per_epoch * num_epochs
+        
+        # 创建进度条（基于有效训练步数）
+        pbar = tqdm(total=total_effective_steps, desc="Training Steps", disable=not self.dist_ctx.is_main_process)
+        
+        self.dist_ctx.print_main(f"DataLoader步数每epoch: {len(self.train_loader)}")
+        self.dist_ctx.print_main(f"有效训练步数每epoch: {effective_steps_per_epoch}")
+        self.dist_ctx.print_main(f"总有效训练步数: {total_effective_steps}")
+        
+        effective_step = 0  # 用于跟踪有效步数
         
         for epoch in range(num_epochs):
             self.current_epoch = epoch
@@ -137,8 +153,15 @@ class DeepSpeedTrainer:
                 # 更新参数
                 self.model.step()
                 
-                # 更新进度条
-                pbar.update(1)
+                # 更新进度条（只在有效步数时更新）
+                if self.current_step % gradient_accumulation_steps == 0:
+                    effective_step += 1
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        'loss': f'{loss.item():.4f}',
+                        'lr': f'{self.optimizer.param_groups[0]["lr"]:.2e}',
+                        'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
+                    })
                 
                 # 记录训练指标
                 current_lr = self.optimizer.param_groups[0]['lr']
@@ -151,14 +174,14 @@ class DeepSpeedTrainer:
                         f"\'learning_rate\': {current_lr:.2e}, \'epoch\': {epoch + batch_idx/len(self.train_loader):.2f}}}"
                     )
                 
-                # 定期评估
-                if self.current_step % eval_steps == 0:
+                # 定期评估（基于有效步数）
+                if effective_step % (eval_steps // gradient_accumulation_steps) == 0 and effective_step > 0:
                     self.evaluate()
                     self.model.train()
                 
-                # 定期保存检查点
-                if self.current_step % save_steps == 0:
-                    self.save_checkpoint(self.current_step)
+                # 定期保存检查点（基于有效步数）
+                if effective_step % (save_steps // gradient_accumulation_steps) == 0 and effective_step > 0:
+                    self.save_checkpoint(effective_step)
             
             # Epoch结束统计
             epoch_time = time.time() - epoch_start_time
@@ -174,7 +197,7 @@ class DeepSpeedTrainer:
         self.evaluate()
         
         # 保存最终检查点
-        self.save_checkpoint(self.current_step)
+        self.save_checkpoint(effective_step)
         
         self.dist_ctx.print_main("训练完成！")
         self.monitor.save_logs()

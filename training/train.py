@@ -54,19 +54,45 @@ def setup_model(config):
 
 def print_training_info(config, train_loader, val_loader):
     """打印训练信息"""
+    # 获取DeepSpeed配置
+    deepspeed_config = config.get('deepspeed', {})
+    if isinstance(deepspeed_config, str):
+        import json
+        with open(deepspeed_config, 'r') as f:
+            deepspeed_config = json.load(f)
+    
+    gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
+    micro_batch_size = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
+    train_batch_size = deepspeed_config.get('train_batch_size', 32)
+    
+    # 计算有效步数
+    dataloader_steps_per_epoch = len(train_loader)
+    effective_steps_per_epoch = dataloader_steps_per_epoch // gradient_accumulation_steps
+    total_effective_steps = effective_steps_per_epoch * config['training']['num_epochs']
+    
     print("=" * 60)
     print("🚀 Qwen2.5-VL食物分类多GPU训练")
     print("=" * 60)
     print(f"📊 训练数据集大小: {len(train_loader.dataset):,}")
     print(f"📊 验证数据集大小: {len(val_loader.dataset):,}")
-    print(f"📦 训练批次数: {len(train_loader):,}")
-    print(f"📦 验证批次数: {len(val_loader):,}")
     print(f"🎯 类别数量: {config['model']['num_labels']}")
     print(f"🔄 训练轮数: {config['training']['num_epochs']}")
-    print(f"📝 日志步数: {config['logging_steps']}")
-    print(f"💾 保存步数: {config['save_steps']}")
-    print(f"🔍 评估步数: {config['eval_steps']}")
-    print(f"📁 输出目录: {config['output_dir']}")
+    print()
+    print("📦 批次配置:")
+    print(f"  • 每GPU微批次大小: {micro_batch_size}")
+    print(f"  • 梯度累积步数: {gradient_accumulation_steps}")
+    print(f"  • 有效批次大小: {train_batch_size}")
+    print()
+    print("📈 步数统计:")
+    print(f"  • DataLoader步数每epoch: {dataloader_steps_per_epoch:,}")
+    print(f"  • 有效训练步数每epoch: {effective_steps_per_epoch:,}")
+    print(f"  • 总有效训练步数: {total_effective_steps:,}")
+    print()
+    print("📝 训练配置:")
+    print(f"  • 日志步数: {config['logging_steps']}")
+    print(f"  • 保存步数: {config['save_steps']}")
+    print(f"  • 评估步数: {config['eval_steps']}")
+    print(f"  • 输出目录: {config['output_dir']}")
     print("=" * 60)
 
 def main():

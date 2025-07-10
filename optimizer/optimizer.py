@@ -11,9 +11,7 @@ def create_optimizer(model, config):
         lr = float(lr)
     if isinstance(weight_decay, str):
         weight_decay = float(weight_decay)
-    
-    print(f"优化器参数: lr={lr} (type: {type(lr)}), weight_decay={weight_decay} (type: {type(weight_decay)})")
-    
+        
     no_decay = ["bias", "LayerNorm.weight"]
     
     # 分别收集参数，确保不为空
