@@ -1,6 +1,6 @@
 from torch.optim import AdamW
 
-def build_optimizer(model, lr, weight_decay):
+def create_optimizer(model, lr, weight_decay):
     no_decay = ["bias", "LayerNorm.weight"]
     
     # 分别收集参数，确保不为空

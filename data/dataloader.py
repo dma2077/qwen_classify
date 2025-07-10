@@ -3,7 +3,7 @@ from transformers import AutoProcessor
 from .dataset import MyFoodDataset
 from .collator import create_collate_fn
 
-def build_dataloader(
+def create_dataloaders(
     split_file: str,
     pretrained_model_name: str,
     batch_size: int,
