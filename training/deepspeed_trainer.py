@@ -318,12 +318,23 @@ def train(args):
     
     # Build optimizer - use FusedAdam for better performance
     if config.get("training", {}).get("use_fused_adam", True):
+        # Create parameter groups for FusedAdam similar to build_optimizer
+        no_decay = ["bias", "LayerNorm.weight"]
+        grouped_parameters = [
+            {
+                "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": config["training"]["weight_decay"],
+            },
+            {
+                "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
         optimizer = FusedAdam(
-            model.parameters(),
+            grouped_parameters,
             lr=config["training"]["lr"],
             betas=(0.9, 0.95),
-            eps=1e-8,
-            weight_decay=config["training"]["weight_decay"]
+            eps=1e-8
         )
     else:
         optimizer = build_optimizer(
