@@ -316,38 +316,68 @@ def train(args):
     with deepspeed.zero.Init(config_dict_or_path=args.deepspeed_config, enabled=False):
         model = build_model(config)
     
+    # Ensure learning rate is a float
+    lr = float(config["training"]["lr"])
+    weight_decay = float(config["training"]["weight_decay"])
+    
+    if ctx.rank == 0:
+        logger.info(f"Using lr={lr} (type: {type(lr)}), weight_decay={weight_decay} (type: {type(weight_decay)})")
+    
     # Build optimizer - use FusedAdam for better performance
     if config.get("training", {}).get("use_fused_adam", True):
         # Create parameter groups for FusedAdam similar to build_optimizer
         no_decay = ["bias", "LayerNorm.weight"]
-        grouped_parameters = [
-            {
-                "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-                "weight_decay": config["training"]["weight_decay"],
-            },
-            {
-                "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+        
+        # 分别收集参数，确保不为空
+        decay_params = [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and p.requires_grad]
+        no_decay_params = [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and p.requires_grad]
+        
+        grouped_parameters = []
+        if decay_params:
+            grouped_parameters.append({
+                "params": decay_params,
+                "weight_decay": weight_decay,
+            })
+        if no_decay_params:
+            grouped_parameters.append({
+                "params": no_decay_params,
                 "weight_decay": 0.0,
-            },
-        ]
+            })
+        
+        # 如果没有找到任何参数组，使用所有可训练参数
+        if not grouped_parameters:
+            grouped_parameters = [{
+                "params": [p for p in model.parameters() if p.requires_grad],
+                "weight_decay": weight_decay,
+            }]
+        
         optimizer = FusedAdam(
             grouped_parameters,
-            lr=config["training"]["lr"],
+            lr=lr,
             betas=(0.9, 0.95),
             eps=1e-8
         )
     else:
         optimizer = build_optimizer(
             model,
-            lr=config["training"]["lr"],
-            weight_decay=config["training"]["weight_decay"],
+            lr=lr,
+            weight_decay=weight_decay,
         )
     
     # Build learning rate scheduler
     num_steps = len(train_loader) * config["training"]["epochs"]
+    warmup_steps = int(config["training"]["warmup_steps"])
+    
+    # Debug: Print optimizer information
+    if ctx.rank == 0:
+        logger.info(f"Building scheduler with warmup_steps={warmup_steps}, total_steps={num_steps}")
+        logger.info(f"Optimizer has {len(optimizer.param_groups)} parameter groups")
+        for i, group in enumerate(optimizer.param_groups):
+            logger.info(f"Group {i}: lr={group.get('lr', 'NOT SET')}, weight_decay={group.get('weight_decay', 'NOT SET')}, params_count={len(group['params'])}")
+    
     lr_scheduler = build_scheduler(
         optimizer,
-        num_warmup_steps=config["training"]["warmup_steps"],
+        num_warmup_steps=warmup_steps,
         num_training_steps=num_steps,
     )
     
