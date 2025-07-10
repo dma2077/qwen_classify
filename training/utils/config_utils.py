@@ -17,10 +17,7 @@ def prepare_config(config):
     training_config.setdefault('eval_steps', 1000)
     training_config.setdefault('save_hf_format', True)
     training_config.setdefault('save_deepspeed_format', True)
-    
-    # 参数名称映射和标准化
-    print(f"原始训练配置: {training_config}")
-    
+        
     if 'epochs' in training_config and 'num_epochs' not in training_config:
         training_config['num_epochs'] = training_config['epochs']
     

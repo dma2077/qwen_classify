@@ -99,6 +99,9 @@ def main():
     """主函数"""
     args = parse_args()
     
+    # 初始化分布式环境 (DeepSpeed会处理这个)
+    deepspeed.init_distributed()
+    
     # 加载配置
     config = load_config(args.config)
     
@@ -119,7 +122,7 @@ def main():
     # 设置模型
     model = setup_model(config)
     
-    # 设置数据加载器
+    # 设置数据加载器（现在分布式环境已经初始化）
     train_loader, val_loader = create_dataloaders(config)
     
     # 创建训练器（这里会调用prepare_config）

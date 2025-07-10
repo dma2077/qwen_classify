@@ -130,6 +130,10 @@ class DeepSpeedTrainer:
             self.current_epoch = epoch
             self.model.train()
             
+            # 为分布式采样器设置epoch（确保每个epoch的shuffle正确）
+            if hasattr(self.train_loader.sampler, 'set_epoch'):
+                self.train_loader.sampler.set_epoch(epoch)
+            
             epoch_loss = 0
             epoch_start_time = time.time()
             
