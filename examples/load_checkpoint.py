@@ -86,7 +86,14 @@ def demo_inference(model, processor, image_path=None):
     # 推理
     model.eval()
     with torch.no_grad():
-        outputs = model(**inputs)
+        # 检查并添加image_grid_thw参数
+        if "image_grid_thw" in inputs and inputs["image_grid_thw"] is not None:
+            outputs = model(**inputs)
+        else:
+            # 如果没有image_grid_thw，尝试不传递这个参数
+            inputs_without_grid = {k: v for k, v in inputs.items() if k != "image_grid_thw"}
+            outputs = model(**inputs_without_grid)
+        
         logits = outputs.logits
         predicted_class = logits.argmax(dim=-1).item()
     

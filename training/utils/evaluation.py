@@ -19,12 +19,18 @@ def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
                 labels = batch["labels"].to(device)
                 
                 # 前向传播
-                outputs = model(
-                    input_ids=inputs,
-                    attention_mask=attention_mask,
-                    pixel_values=pixel_values,
-                    labels=labels
-                )
+                forward_kwargs = {
+                    "input_ids": inputs,
+                    "attention_mask": attention_mask,
+                    "pixel_values": pixel_values,
+                    "labels": labels
+                }
+                
+                # 检查并添加image_grid_thw参数
+                if "image_grid_thw" in batch:
+                    forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(device)
+                
+                outputs = model(**forward_kwargs)
                 
                 # 计算损失
                 loss = outputs.loss

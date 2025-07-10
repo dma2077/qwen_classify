@@ -111,12 +111,19 @@ class DeepSpeedTrainer:
                 pixel_values = batch["pixel_values"].to(self.dist_ctx.device)
                 labels = batch["labels"].to(self.dist_ctx.device)
                 
-                outputs = self.model(
-                    input_ids=inputs,
-                    attention_mask=attention_mask,
-                    pixel_values=pixel_values,
-                    labels=labels
-                )
+                # 添加image_grid_thw参数（如果存在）
+                forward_kwargs = {
+                    "input_ids": inputs,
+                    "attention_mask": attention_mask,
+                    "pixel_values": pixel_values,
+                    "labels": labels
+                }
+                
+                # 检查并添加image_grid_thw参数
+                if "image_grid_thw" in batch:
+                    forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(self.dist_ctx.device)
+                
+                outputs = self.model(**forward_kwargs)
                 
                 loss = outputs.loss
                 epoch_loss += loss.item()
