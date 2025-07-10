@@ -24,11 +24,10 @@ def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="Qwen2.5-VL食物分类多GPU训练")
     parser.add_argument("--config", type=str, required=True, help="配置文件路径")
-    parser.add_argument("--deepspeed_config", type=str, required=True, help="DeepSpeed配置文件路径")
     parser.add_argument("--local_rank", type=int, default=-1, help="本地进程排名")
     parser.add_argument("--resume_from", type=str, help="恢复训练的检查点路径")
     
-    # 支持DeepSpeed参数
+    # 支持DeepSpeed参数 (包含 --deepspeed_config)
     parser = deepspeed.add_config_arguments(parser)
     return parser.parse_args()
 
@@ -77,7 +76,7 @@ def main():
     # 加载配置
     config = load_config(args.config)
     
-    # 设置DeepSpeed配置路径
+    # 设置DeepSpeed配置文件路径
     config['deepspeed'] = args.deepspeed_config
     
     # 创建输出目录
