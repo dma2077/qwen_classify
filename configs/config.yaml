@@ -12,8 +12,11 @@ training:
   weight_decay:    0.01
   warmup_steps:    500
   output_dir:      "./outputs"
-  logging_steps:   50
-  save_steps:      1000
+  logging_steps:   50  # Log training metrics every N steps
+  save_steps:      1000  # Save checkpoint every N steps
+  eval_steps:      1000  # Evaluate model every N steps (can be same as save_steps)
+  save_hf_format:  true  # Save HuggingFace format during training
+  save_deepspeed_format: false  # Save DeepSpeed format (only needed for resuming training)
   num_workers:     0  # Set to 0 to avoid multiprocessing issues
   use_fused_adam:  true  # Use FusedAdam for better performance
   # Note: micro_batch_size_per_gpu and gradient_accumulation_steps are now in ds_s2.json
