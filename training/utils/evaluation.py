@@ -61,11 +61,15 @@ def prepare_config(config):
     training_config.setdefault('save_deepspeed_format', True)
     
     # 参数名称映射和标准化
+    print(f"原始训练配置: {training_config}")
+    
     if 'epochs' in training_config and 'num_epochs' not in training_config:
         training_config['num_epochs'] = training_config['epochs']
+        print(f"映射 epochs -> num_epochs: {training_config['num_epochs']}")
     
     if 'lr' in training_config and 'learning_rate' not in training_config:
         training_config['learning_rate'] = training_config['lr']
+        print(f"映射 lr -> learning_rate: {training_config['learning_rate']}")
     
     # 将常用的配置项提升到根层级，方便访问
     config['logging_steps'] = training_config['logging_steps']
@@ -77,5 +81,7 @@ def prepare_config(config):
     # 确保output_dir在根层级
     if 'output_dir' not in config and 'output_dir' in training_config:
         config['output_dir'] = training_config['output_dir']
+    
+    print(f"处理后的训练配置: {config['training']}")
     
     return config 

@@ -8,11 +8,12 @@ from transformers import AutoProcessor
 from .utils.model_utils import save_hf_model
 from .utils.distributed import DistributedContext
 from .utils.monitor import TrainingMonitor
-from .utils.evaluation import evaluate_model, prepare_config
+from .utils.evaluation import evaluate_model
 
 class DeepSpeedTrainer:
     def __init__(self, config):
-        self.config = prepare_config(config)
+        # 假设配置已经通过prepare_config处理过
+        self.config = config
         self.dist_ctx = DistributedContext()
         self.monitor = TrainingMonitor(self.config['output_dir'])
         self.model = None

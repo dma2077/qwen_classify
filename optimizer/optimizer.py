@@ -6,6 +6,14 @@ def create_optimizer(model, config):
     lr = config['training']['learning_rate']
     weight_decay = config['training']['weight_decay']
     
+    # 确保学习率是数字类型
+    if isinstance(lr, str):
+        lr = float(lr)
+    if isinstance(weight_decay, str):
+        weight_decay = float(weight_decay)
+    
+    print(f"优化器参数: lr={lr} (type: {type(lr)}), weight_decay={weight_decay} (type: {type(weight_decay)})")
+    
     no_decay = ["bias", "LayerNorm.weight"]
     
     # 分别收集参数，确保不为空
@@ -34,4 +42,10 @@ def create_optimizer(model, config):
             "weight_decay": weight_decay,
         }]
     
-    return AdamW(grouped)
+    optimizer = AdamW(grouped)
+    
+    # 验证优化器参数组
+    for i, param_group in enumerate(optimizer.param_groups):
+        print(f"参数组 {i}: lr={param_group['lr']} (type: {type(param_group['lr'])})")
+    
+    return optimizer

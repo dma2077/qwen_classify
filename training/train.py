@@ -86,6 +86,10 @@ def main():
     # 为了兼容性，将output_dir提升到根层级
     config['output_dir'] = output_dir
     
+    # 提前准备配置参数（参数映射等）
+    from training.utils.evaluation import prepare_config
+    config = prepare_config(config)
+    
     # 设置模型
     model = setup_model(config)
     
