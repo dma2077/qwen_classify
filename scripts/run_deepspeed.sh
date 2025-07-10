@@ -13,12 +13,12 @@ if [[ $NUM_GPUS -eq 1 ]]; then
     python training/deepspeed_trainer.py \
         --config_file $CONFIG_FILE \
         --output_dir $OUTPUT_DIR \
-        --deepspeed_config configs/deepspeed_config.json \
+        --deepspeed_config configs/ds_s2.json \
         --local_rank 0
 else
     deepspeed --num_gpus=$NUM_GPUS \
         training/deepspeed_trainer.py \
         --config_file $CONFIG_FILE \
         --output_dir $OUTPUT_DIR \
-        --deepspeed_config configs/deepspeed_config.json
+        --deepspeed_config configs/ds_s2.json
 fi 
