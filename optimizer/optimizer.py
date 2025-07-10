@@ -1,4 +1,4 @@
-from transformers import AdamW
+from torch.optim import AdamW
 
 def build_optimizer(model, lr, weight_decay):
     no_decay = ["bias", "LayerNorm.weight"]
