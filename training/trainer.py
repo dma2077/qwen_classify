@@ -1,7 +1,13 @@
 import os
 import yaml
 import torch
+import sys
 from transformers import TrainingArguments, Trainer
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 from data.dataloader import build_dataloader
 from training.models import load_config, build_model
 from optimizer.optimizer import build_optimizer
