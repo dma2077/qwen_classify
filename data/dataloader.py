@@ -1,7 +1,7 @@
 from torch.utils.data import DataLoader
 from transformers import AutoProcessor
-from dataset import MyFoodDataset
-from collate import create_collate_fn
+from .dataset import MyFoodDataset
+from .collator import create_collate_fn
 
 def build_dataloader(
     split_file: str,
