@@ -80,7 +80,11 @@ def main():
     config['deepspeed'] = args.deepspeed_config
     
     # 创建输出目录
-    os.makedirs(config['output_dir'], exist_ok=True)
+    output_dir = config['training']['output_dir']
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 为了兼容性，将output_dir提升到根层级
+    config['output_dir'] = output_dir
     
     # 设置模型
     model = setup_model(config)
@@ -88,7 +92,10 @@ def main():
     # 设置数据加载器
     train_loader, val_loader = create_dataloaders(config)
     
-    # 打印训练信息
+    # 创建训练器（这里会调用prepare_config）
+    trainer = DeepSpeedTrainer(config)
+    
+    # 打印训练信息（在prepare_config之后）
     if args.local_rank <= 0:
         print_training_info(config, train_loader, val_loader)
     
@@ -97,9 +104,6 @@ def main():
     
     # 设置学习率调度器
     lr_scheduler = create_lr_scheduler(optimizer, config, len(train_loader))
-    
-    # 创建训练器
-    trainer = DeepSpeedTrainer(config)
     
     # 设置训练器
     trainer.setup_model(model, train_loader, val_loader, optimizer, lr_scheduler)

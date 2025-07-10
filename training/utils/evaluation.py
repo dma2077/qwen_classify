@@ -46,17 +46,36 @@ def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
 
 def prepare_config(config):
     """准备配置参数"""
-    # 设置默认值
-    config.setdefault('logging_steps', 50)
-    config.setdefault('save_steps', 1000)
-    config.setdefault('eval_steps', 1000)
-    config.setdefault('save_hf_format', True)
-    config.setdefault('save_deepspeed_format', True)
-    
     # 检查必要的配置
-    required_keys = ['model', 'training', 'deepspeed', 'data']
+    required_keys = ['model', 'training', 'data']
     for key in required_keys:
         if key not in config:
             raise ValueError(f"配置中缺少必要的键: {key}")
+    
+    # 设置training节点下的默认值
+    training_config = config['training']
+    training_config.setdefault('logging_steps', 50)
+    training_config.setdefault('save_steps', 1000) 
+    training_config.setdefault('eval_steps', 1000)
+    training_config.setdefault('save_hf_format', True)
+    training_config.setdefault('save_deepspeed_format', True)
+    
+    # 参数名称映射和标准化
+    if 'epochs' in training_config and 'num_epochs' not in training_config:
+        training_config['num_epochs'] = training_config['epochs']
+    
+    if 'lr' in training_config and 'learning_rate' not in training_config:
+        training_config['learning_rate'] = training_config['lr']
+    
+    # 将常用的配置项提升到根层级，方便访问
+    config['logging_steps'] = training_config['logging_steps']
+    config['save_steps'] = training_config['save_steps']
+    config['eval_steps'] = training_config['eval_steps']
+    config['save_hf_format'] = training_config['save_hf_format']
+    config['save_deepspeed_format'] = training_config['save_deepspeed_format']
+    
+    # 确保output_dir在根层级
+    if 'output_dir' not in config and 'output_dir' in training_config:
+        config['output_dir'] = training_config['output_dir']
     
     return config 

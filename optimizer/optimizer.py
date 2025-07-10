@@ -1,6 +1,11 @@
 from torch.optim import AdamW
 
-def create_optimizer(model, lr, weight_decay):
+def create_optimizer(model, config):
+    """创建优化器"""
+    # 从配置中获取参数
+    lr = config['training']['learning_rate']
+    weight_decay = config['training']['weight_decay']
+    
     no_decay = ["bias", "LayerNorm.weight"]
     
     # 分别收集参数，确保不为空
