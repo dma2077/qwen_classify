@@ -186,13 +186,19 @@ class DeepSpeedTrainer:
                 # 记录训练指标
                 current_lr = self.optimizer.param_groups[0]['lr']
                 # 确保grad_norm是float类型，避免JSON序列化错误
-                grad_norm_value = float(grad_norm) if hasattr(grad_norm, 'item') else float(grad_norm)
+                # 处理grad_norm可能为None的情况
+                if grad_norm is None:
+                    grad_norm_value = 0.0
+                elif hasattr(grad_norm, 'item'):
+                    grad_norm_value = float(grad_norm.item())
+                else:
+                    grad_norm_value = float(grad_norm)
                 self.monitor.log_step(self.current_step, epoch, loss.item(), grad_norm_value, current_lr)
                 
                 # 详细日志记录
                 if self.current_step % logging_steps == 0:
                     self.dist_ctx.print_main(
-                        f"{{\'loss\': {loss.item():.4f}, \'grad_norm\': {grad_norm:.4f}, "
+                        f"{{\'loss\': {loss.item():.4f}, \'grad_norm\': {grad_norm_value:.4f}, "
                         f"\'learning_rate\': {current_lr:.2e}, \'epoch\': {epoch + batch_idx/len(self.train_loader):.2f}}}"
                     )
                 
