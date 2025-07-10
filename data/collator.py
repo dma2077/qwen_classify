@@ -44,6 +44,24 @@ def create_collate_fn(processor):
                 truncation=True,
                 max_length=2048  # 限制文本长度
             )
+            
+            # 检查并记录processor输出的键
+            if not hasattr(processor, '_warned_keys'):
+                print(f"Processor output keys: {list(enc.keys())}")
+                processor._warned_keys = True
+            
+            # 确保所有必要的键都存在
+            if "image_grid_thw" not in enc:
+                print("Warning: image_grid_thw not found in processor output!")
+                print(f"Available keys: {list(enc.keys())}")
+                # 如果没有image_grid_thw，尝试生成一个默认值
+                # 根据pixel_values的形状推断
+                if "pixel_values" in enc and enc["pixel_values"] is not None:
+                    batch_size = enc["pixel_values"].shape[0]
+                    # 为每个图像创建默认的grid_thw (1, 16, 16) - 这是一个常见的默认值
+                    enc["image_grid_thw"] = torch.tensor([[1, 16, 16]] * batch_size, dtype=torch.long)
+                    print(f"Generated default image_grid_thw: {enc['image_grid_thw']}")
+            
             enc["labels"] = labels
             return enc
         except Exception as e:
