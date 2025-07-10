@@ -27,6 +27,14 @@ deepspeed:
   zero_stage: 2
   fp16: true
   
+# Weights & Biases configuration
+wandb:
+  enabled: true  # Set to false to disable wandb logging
+  project: "qwen_classification"  # wandb project name
+  run_name: null  # Optional run name, will be auto-generated if null
+  tags: ["qwen", "deepspeed", "classification"]  # Optional tags
+  notes: "Qwen2.5-VL classification training"  # Optional notes
+
 # Legacy accelerate settings (for compatibility)
 accelerate:
   gradient_accumulation_steps: 4  # Updated to match training config

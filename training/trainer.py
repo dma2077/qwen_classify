@@ -69,6 +69,7 @@ def main():
         output_dir=cfg["training"]["output_dir"],
         per_device_train_batch_size=cfg["training"]["batch_size"],
         per_device_eval_batch_size=cfg["training"]["batch_size"],
+        gradient_accumulation_steps=cfg["training"].get("gradient_accumulation_steps", 1),
         num_train_epochs=cfg["training"]["epochs"],
         learning_rate=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
@@ -79,6 +80,7 @@ def main():
         save_strategy="epoch",
         load_best_model_at_end=True,
         fp16=cfg.get("accelerate", {}).get("fp16", False),
+        dataloader_drop_last=True,  # Important for gradient accumulation
         push_to_hub=False,
     )
 

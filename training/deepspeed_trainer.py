@@ -3,13 +3,21 @@ import json
 import time
 import argparse
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import torch
 import torch.distributed as dist
 import deepspeed
 from transformers import AutoProcessor
 from deepspeed.ops.adam import FusedAdam
+
+# Try to import wandb
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+    wandb = None
 
 # Import existing project modules
 from data.dataloader import build_dataloader
@@ -62,6 +70,47 @@ class TrainingMonitor:
         self.total_samples = 0
         self.total_loss = 0.0
         self.start_time = time.time()
+        self.wandb_enabled = False
+        
+        # Initialize wandb if enabled and available
+        self._init_wandb()
+    
+    def _init_wandb(self):
+        """Initialize wandb if enabled and available"""
+        wandb_config = self.config.get("wandb", {})
+        
+        if not wandb_config.get("enabled", False):
+            if self.ctx.rank == 0:
+                logger.info("wandb logging is disabled")
+            return
+            
+        if not HAS_WANDB:
+            if self.ctx.rank == 0:
+                logger.warning("wandb is not installed. Install with: pip install wandb")
+            return
+            
+        # Only initialize wandb on rank 0
+        if self.ctx.rank == 0:
+            try:
+                # Initialize wandb
+                wandb.init(
+                    project=wandb_config.get("project", "qwen_classification"),
+                    name=wandb_config.get("run_name"),
+                    tags=wandb_config.get("tags", []),
+                    notes=wandb_config.get("notes", ""),
+                    config={
+                        "model": self.config.get("model", {}),
+                        "training": self.config.get("training", {}),
+                        "data": self.config.get("data", {}),
+                        "deepspeed": self.config.get("deepspeed", {}),
+                        "world_size": self.ctx.world_size,
+                    }
+                )
+                self.wandb_enabled = True
+                logger.info(f"wandb initialized with project: {wandb_config.get('project', 'qwen_classification')}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize wandb: {e}")
+                self.wandb_enabled = False
         
     def update(self, loss: float, batch_size: int, learning_rate: float, **kwargs):
         """Update training metrics"""
@@ -78,6 +127,27 @@ class TrainingMonitor:
             'total_samples': self.total_samples,
             **kwargs
         })
+        
+        # Log to wandb if enabled
+        if self.wandb_enabled and self.ctx.rank == 0:
+            wandb_metrics = {
+                'train/loss': loss,
+                'train/avg_loss': self.total_loss / self.step_count,
+                'train/learning_rate': learning_rate,
+                'train/total_samples': self.total_samples,
+                'train/step': self.step_count,
+            }
+            
+            # Add additional metrics if available
+            if 'grad_norm' in kwargs and kwargs['grad_norm'] is not None:
+                wandb_metrics['train/grad_norm'] = kwargs['grad_norm']
+            if 'step_time' in kwargs and kwargs['step_time'] is not None:
+                wandb_metrics['train/step_time'] = kwargs['step_time']
+                # Calculate samples per second
+                samples_per_sec = (batch_size * self.ctx.world_size) / kwargs['step_time']
+                wandb_metrics['train/samples_per_sec'] = samples_per_sec
+                
+            wandb.log(wandb_metrics, step=self.step_count)
         
     def log(self, force_log: bool = False):
         """Log metrics"""
@@ -101,6 +171,19 @@ class TrainingMonitor:
                     
                 logger.info(log_msg)
     
+    def log_eval_metrics(self, eval_metrics: Dict[str, float], epoch: Optional[int] = None):
+        """Log evaluation metrics to wandb"""
+        if self.wandb_enabled and self.ctx.rank == 0:
+            wandb_eval_metrics = {}
+            for key, value in eval_metrics.items():
+                wandb_eval_metrics[f"eval/{key}"] = value
+            
+            # Add epoch information if available
+            if epoch is not None:
+                wandb_eval_metrics["epoch"] = epoch
+                
+            wandb.log(wandb_eval_metrics, step=self.step_count)
+    
     def save_checkpoint_info(self, output_dir: str):
         """Save training info to checkpoint directory"""
         if self.ctx.rank == 0:
@@ -114,6 +197,11 @@ class TrainingMonitor:
             info_path = os.path.join(output_dir, 'training_info.json')
             with open(info_path, 'w') as f:
                 json.dump(checkpoint_info, f, indent=2)
+    
+    def finish(self):
+        """Finish wandb run"""
+        if self.wandb_enabled and self.ctx.rank == 0:
+            wandb.finish()
 
 
 def prepare_config(args, ctx, config):
@@ -267,6 +355,10 @@ def train(args):
         if ctx.rank == 0:
             logger.info(f"Starting epoch {epoch + 1}/{config['training']['epochs']}")
         
+        # Log epoch start to wandb
+        if monitor.wandb_enabled and ctx.rank == 0:
+            wandb.log({"epoch": epoch + 1}, step=monitor.step_count)
+        
         epoch_start_time = time.time()
         
         for step, batch in enumerate(train_loader, 1):
@@ -325,6 +417,9 @@ def train(args):
         if ctx.rank == 0:
             logger.info(f"Evaluation metrics: {eval_metrics}")
         
+        # Log evaluation metrics to wandb
+        monitor.log_eval_metrics(eval_metrics, epoch + 1)
+        
         # Save epoch checkpoint
         checkpoint_dir = os.path.join(config["training"]["output_dir"], f"checkpoint-epoch-{epoch + 1}")
         model.save_checkpoint(checkpoint_dir)
@@ -340,6 +435,9 @@ def train(args):
     
     # Final logging
     monitor.log(force_log=True)
+    
+    # Finish wandb run
+    monitor.finish()
     
     if ctx.rank == 0:
         logger.info("Training completed successfully!")
