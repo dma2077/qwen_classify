@@ -345,7 +345,6 @@ def train(args):
     ds_config["gradient_accumulation_steps"] = config["training"]["gradient_accumulation_steps"]
     
     model, optimizer, _, lr_scheduler = deepspeed.initialize(
-        args=args,
         model=model,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
