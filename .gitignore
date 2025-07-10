@@ -1,3 +1,6 @@
 data/dataset_food
 data/dataset_food_label
 data/tools
+*.log
+outputs
+*/__pycache__/*

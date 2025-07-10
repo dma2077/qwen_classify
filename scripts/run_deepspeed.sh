@@ -5,8 +5,7 @@
 CONFIG_FILE="configs/config.yaml"
 OUTPUT_DIR="./outputs"
 NUM_GPUS=8
-
-# Add current directory to PYTHONPATH to resolve imports
+export http_proxy=http://oversea-squid1.jp.txyun:11080 https_proxy=http://oversea-squid1.jp.txyun:11080
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
 if [[ $NUM_GPUS -eq 1 ]]; then

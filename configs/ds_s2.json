@@ -2,62 +2,27 @@
   "train_batch_size": "auto",
   "train_micro_batch_size_per_gpu": "auto",
   "gradient_accumulation_steps": "auto",
-  
-  "optimizer": {
-    "type": "AdamW",
-    "params": {
-      "lr": "auto",
-      "betas": [0.9, 0.95],
-      "eps": 1e-8,
-      "weight_decay": "auto"
-    }
-  },
-  
-  "scheduler": {
-    "type": "WarmupCosineLR",
-    "params": {
-      "warmup_min_lr": "auto",
-      "warmup_max_lr": "auto",
-      "warmup_num_steps": "auto",
-      "cosine_min_lr": "auto",
-      "cosine_max_lr": "auto",
-      "total_num_steps": "auto"
-    }
-  },
-  
-  "zero_optimization": {
-    "stage": 2,
-    "allgather_partitions": true,
-    "allgather_bucket_size": 2e8,
-    "overlap_comm": true,
-    "reduce_scatter": true,
-    "reduce_bucket_size": 2e8,
-    "contiguous_gradients": true,
-    "cpu_offload": false
-  },
-  
-  "gradient_clipping": 1.0,
-  
+  "gradient_clipping": "auto",
+  "zero_allow_untested_optimizer": true,
   "fp16": {
-    "enabled": true,
+    "enabled": "auto",
     "loss_scale": 0,
     "loss_scale_window": 1000,
     "initial_scale_power": 16,
     "hysteresis": 2,
     "min_loss_scale": 1
   },
-  "activation_checkpointing": {
-    "partition_activations": false,
-    "cpu_checkpointing": false,
-    "contiguous_memory_optimization": false,
-    "number_checkpoints": null,
-    "synchronize_checkpoint_boundary": false,
-    "profile": false
+  "bf16": {
+    "enabled": "auto"
   },
-  
-  "wall_clock_breakdown": false,
-  "memory_breakdown": false,
-  
-  "steps_per_print": 50,
-  "dump_state": false
-} 
+  "zero_optimization": {
+    "stage": 2,
+    "allgather_partitions": true,
+    "allgather_bucket_size": 5e8,
+    "overlap_comm": false,
+    "reduce_scatter": true,
+    "reduce_bucket_size": 5e8,
+    "contiguous_gradients": true,
+    "round_robin_gradients": true
+  }
+}
