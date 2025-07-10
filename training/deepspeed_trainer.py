@@ -7,7 +7,7 @@ from tqdm import tqdm
 from transformers import AutoProcessor
 from .utils.model_utils import save_hf_model
 from .utils.distributed import DistributedContext
-from .utils.monitor import TrainingMonitor
+from .utils.monitor import TrainingMonitor, make_json_serializable
 from .utils.evaluation import evaluate_model
 
 class DeepSpeedTrainer:
@@ -57,7 +57,8 @@ class DeepSpeedTrainer:
         }
         
         with open(os.path.join(checkpoint_dir, 'training_info.json'), 'w') as f:
-            json.dump(training_info, f, indent=2)
+            # 使用make_json_serializable确保所有数据都可以序列化
+            json.dump(make_json_serializable(training_info), f, indent=2)
         
         # 保存DeepSpeed格式（可选）
         if self.config.get('save_deepspeed_format', True):
@@ -184,7 +185,9 @@ class DeepSpeedTrainer:
                 
                 # 记录训练指标
                 current_lr = self.optimizer.param_groups[0]['lr']
-                self.monitor.log_step(self.current_step, epoch, loss.item(), grad_norm, current_lr)
+                # 确保grad_norm是float类型，避免JSON序列化错误
+                grad_norm_value = float(grad_norm) if hasattr(grad_norm, 'item') else float(grad_norm)
+                self.monitor.log_step(self.current_step, epoch, loss.item(), grad_norm_value, current_lr)
                 
                 # 详细日志记录
                 if self.current_step % logging_steps == 0:

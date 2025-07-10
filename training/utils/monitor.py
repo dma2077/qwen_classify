@@ -1,7 +1,23 @@
 import time
 import json
 import os
+import torch
 from typing import Dict, List, Optional
+
+def make_json_serializable(obj):
+    """确保对象可以JSON序列化"""
+    if isinstance(obj, torch.Tensor):
+        return float(obj.item()) if obj.numel() == 1 else obj.tolist()
+    elif isinstance(obj, (torch.float32, torch.float64)):
+        return float(obj)
+    elif isinstance(obj, (torch.int32, torch.int64)):
+        return int(obj)
+    elif isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [make_json_serializable(item) for item in obj]
+    else:
+        return obj
 
 class TrainingMonitor:
     """训练监控器"""
@@ -28,13 +44,13 @@ class TrainingMonitor:
         step_time = current_time - self.step_start_time
         
         log_entry = {
-            'step': step,
-            'epoch': epoch,
-            'loss': loss,
-            'grad_norm': grad_norm,
-            'learning_rate': learning_rate,
-            'step_time': step_time,
-            'timestamp': current_time
+            'step': int(step),
+            'epoch': int(epoch),
+            'loss': float(loss),
+            'grad_norm': float(grad_norm),
+            'learning_rate': float(learning_rate),
+            'step_time': float(step_time),
+            'timestamp': float(current_time)
         }
         
         self.step_logs.append(log_entry)
@@ -47,10 +63,10 @@ class TrainingMonitor:
     def log_epoch(self, epoch: int, avg_loss: float, elapsed_time: float):
         """记录epoch统计"""
         log_entry = {
-            'epoch': epoch,
-            'avg_loss': avg_loss,
-            'elapsed_time': elapsed_time,
-            'timestamp': time.time()
+            'epoch': int(epoch),
+            'avg_loss': float(avg_loss),
+            'elapsed_time': float(elapsed_time),
+            'timestamp': float(time.time())
         }
         
         self.epoch_logs.append(log_entry)
@@ -65,8 +81,11 @@ class TrainingMonitor:
                 'total_training_time': time.time() - self.start_time if self.start_time else 0
             }
             
+            # 确保所有数据都可以JSON序列化
+            serializable_logs = make_json_serializable(logs)
+            
             with open(self.log_file, 'w', encoding='utf-8') as f:
-                json.dump(logs, f, indent=2, ensure_ascii=False)
+                json.dump(serializable_logs, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"保存日志失败: {e}")
     
