@@ -27,7 +27,7 @@ except ImportError:
 
 # Import existing project modules
 from data.dataloader import build_dataloader
-from training.models import load_config, build_model
+from training.model import load_config, build_model
 from optimizer.optimizer import build_optimizer
 from training.lr_scheduler import build_scheduler
 

@@ -3,10 +3,8 @@ model:
   num_labels: 101
 
 data:
-  train_jsonl: "/path/to/train.jsonl"  # Changed to jsonl format
-  val_jsonl:   "/path/to/val.jsonl"    # Changed to jsonl format
-  img_dir:     "/path/to/images"
-  img_size:    224
+  train_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_train.jsonl"  # Changed to jsonl format
+  val_jsonl:   "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_test.jsonl"    # Changed to jsonl format
 
 training:
   epochs:          10
