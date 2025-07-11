@@ -79,6 +79,27 @@ class DeepSpeedTrainer:
         
         self.dist_ctx.barrier()
     
+    def _aggregate_loss(self, loss):
+        """在分布式训练中聚合loss"""
+        if self.dist_ctx.world_size <= 1:
+            return loss.item()
+        
+        try:
+            import torch.distributed as dist
+            # 将当前GPU的loss广播到所有进程并求平均
+            loss_tensor = torch.tensor(loss.item(), dtype=torch.float32, device=self.dist_ctx.device)
+            
+            # 使用all_reduce来计算所有GPU的平均loss
+            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+            aggregated_loss = loss_tensor.item() / self.dist_ctx.world_size
+            
+            return aggregated_loss
+            
+        except Exception as e:
+            # 如果聚合失败，返回当前GPU的loss
+            print(f"⚠️  Loss聚合失败，使用当前GPU loss: {e}")
+            return loss.item()
+    
     def _forward_backward_with_profiling(self, forward_kwargs):
         """在前向+反向传播过程中实时测量FLOPs"""
         try:
@@ -242,6 +263,8 @@ class DeepSpeedTrainer:
                     self.model.backward(loss)
                     real_time_flops = self.monitor.actual_flops  # 使用已有的FLOPs值
                 
+                # 注意：无论是否进行profiling，loss都需要在后续进行聚合
+                
                 # 同步FLOPs信息到所有进程
                 if should_measure_flops and self.dist_ctx.world_size > 1:
                     import torch.distributed as dist
@@ -259,7 +282,9 @@ class DeepSpeedTrainer:
                     # 所有进程更新FLOPs信息
                     self.monitor.set_actual_flops(flops_tensor.item(), int(seq_tensor.item()))
                 
-                epoch_loss += loss.item()
+                # 聚合多卡loss（在分布式训练中）
+                aggregated_loss = self._aggregate_loss(loss)
+                epoch_loss += aggregated_loss
                 flops_profiled = True
                 
                 # 获取梯度范数
@@ -288,21 +313,21 @@ class DeepSpeedTrainer:
                     # 更新进度条
                     pbar.update(1)
                     pbar.set_postfix({
-                        'loss': f'{loss.item():.4f}',
+                        'loss': f'{aggregated_loss:.4f}',
                         'lr': f'{current_lr:.2e}',
                         'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
                     })
                     
                     # 记录训练指标（基于有效步数）
                     step_real_time_flops = real_time_flops if should_measure_flops else None
-                    self.monitor.log_step(effective_step, epoch, loss.item(), grad_norm_value, current_lr, attention_mask, step_real_time_flops)
+                    self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, step_real_time_flops)
                 
                     # 详细日志记录（基于有效步数判断输出频率）
                     if effective_step % logging_steps == 0:
                         # 基础日志信息
                         log_message = (
                             f"Step {effective_step:,} | "
-                            f"Loss: {loss.item():.4f} | "
+                            f"Loss: {aggregated_loss:.4f} | "
                             f"Grad Norm: {grad_norm_value:.4f} | "
                             f"LR: {current_lr:.2e} | "
                             f"Epoch: {epoch + batch_idx/len(self.train_loader):.2f}"

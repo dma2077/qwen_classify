@@ -474,6 +474,18 @@ class TrainingMonitor:
             self.use_wandb = True
             print("✅ wandb initialized successfully")
             
+            # 显示wandb链接信息
+            if wandb.run is not None:
+                print(f"📊 wandb project: {wandb.run.project}")
+                print(f"🔗 wandb run: {wandb.run.name}")
+                print(f"🚀 View run at: {wandb.run.url}")
+                if hasattr(wandb.run, 'project_url'):
+                    print(f"⭐ View project at: {wandb.run.project_url()}")
+                else:
+                    # 手动构建项目链接
+                    project_url = f"https://wandb.ai/{wandb.run.entity}/{wandb.run.project}"
+                    print(f"⭐ View project at: {project_url}")
+            
         except Exception as e:
             print(f"❌ Failed to initialize wandb: {e}")
             self.use_wandb = False
@@ -645,14 +657,12 @@ class TrainingMonitor:
                 if gpu_stats:
                     system_logs = {}
                     for gpu_id, stats in gpu_stats.items():
+                        # 只记录GPU内存分配和利用率
+                        system_logs[f"system/{gpu_id}_memory_allocated_percent"] = stats['memory_utilization_percent']
                         system_logs[f"system/{gpu_id}_memory_allocated_gb"] = stats['memory_allocated_gb']
-                        system_logs[f"system/{gpu_id}_memory_utilization_percent"] = stats['memory_utilization_percent']
-                        if 'temperature_c' in stats:
-                            system_logs[f"system/{gpu_id}_temperature_c"] = stats['temperature_c']
-                        if 'power_usage_w' in stats:
-                            system_logs[f"system/{gpu_id}_power_usage_w"] = stats['power_usage_w']
                     
-                    wandb.log(system_logs, step=int(step))
+                    if system_logs:  # 只有当有有效数据时才记录
+                        wandb.log(system_logs, step=int(step))
         
         self.step_start_time = current_time
         
