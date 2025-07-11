@@ -88,6 +88,16 @@ def calculate_mfu(model, batch_size: int, seq_length: int, step_time: float, act
     """计算MFU (Model FLOPs Utilization)
     
     MFU = 实际FLOPs/s / GPU峰值FLOPs/s
+    
+    参数:
+        model: 模型实例
+        batch_size: 批次大小
+        seq_length: 实际序列长度（包含visual tokens + text tokens）
+        step_time: 步骤耗时（秒）
+        actual_flops: 实际测量的FLOPs（包含前向+反向传播）
+    
+    返回:
+        mfu: Model FLOPs Utilization (0-1之间的值)
     """
     try:
         if actual_flops is None:
@@ -463,14 +473,66 @@ class TrainingMonitor:
         
         if self.actual_flops > 0:
             print(f"✅ 模型实际FLOPs: {self.actual_flops:.2e}")
+            
+            # 显示MFU计算相关信息
+            self._show_mfu_calculation_info()
         else:
             print("❌ FLOPs测量失败，MFU计算将被禁用")
+    
+    def _show_mfu_calculation_info(self):
+        """显示MFU计算的详细信息"""
+        try:
+            if self.actual_flops is None or self.actual_flops <= 0:
+                return
+            
+            print(f"\n📊 MFU计算配置信息:")
+            print(f"  • 批次大小: {self.batch_size}")
+            print(f"  • 实际序列长度: {self.actual_seq_length}")
+            print(f"  • 实际FLOPs: {self.actual_flops:.2e}")
+            
+            # 获取GPU峰值性能
+            peak_flops = get_gpu_peak_flops()
+            print(f"  • GPU峰值性能: {peak_flops:.2e} FLOPs/s")
+            
+            # 估算一个样本的MFU (假设1秒的step time)
+            sample_step_time = 1.0
+            sample_mfu = calculate_mfu(self.model_ref, self.batch_size, self.actual_seq_length, sample_step_time, self.actual_flops)
+            print(f"  • 理论最大MFU (1秒/步): {sample_mfu:.4f} ({sample_mfu*100:.2f}%)")
+            
+            # 计算达到目标MFU所需的步骤时间
+            target_mfus = [0.1, 0.2, 0.3, 0.5]
+            print(f"  • 达到目标MFU所需的步骤时间:")
+            for target_mfu in target_mfus:
+                required_time = self.actual_flops / (target_mfu * peak_flops)
+                print(f"    - {target_mfu*100:.0f}% MFU: {required_time:.3f}秒/步")
+                
+        except Exception as e:
+            print(f"显示MFU信息错误: {e}")
     
     def set_actual_flops(self, flops: float, seq_length: int = None):
         """设置实际FLOPs（用于分布式训练中的同步）"""
         self.actual_flops = flops
         if seq_length is not None:
             self.actual_seq_length = seq_length
+    
+    def _calculate_actual_seq_length(self, attention_mask):
+        """动态计算当前batch的实际序列长度"""
+        try:
+            if attention_mask is None:
+                return self.seq_length
+            
+            # 计算每个样本的有效长度
+            valid_lengths = attention_mask.sum(dim=1)  # [batch_size]
+            
+            # 使用批次中的平均有效长度（或最大长度）
+            # 这里使用平均值，因为MFU通常关心的是整体吞吐量
+            avg_seq_length = valid_lengths.float().mean().item()
+            
+            return int(avg_seq_length)
+            
+        except Exception as e:
+            print(f"计算实际序列长度错误: {e}")
+            return self.actual_seq_length if self.actual_seq_length is not None else self.seq_length
     
     def start_training(self):
         """开始训练"""
@@ -480,10 +542,14 @@ class TrainingMonitor:
         if self.use_wandb:
             wandb.log({"training/started": True, "training/start_time": self.start_time})
     
-    def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float):
+    def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None):
         """记录训练步骤"""
         current_time = time.time()
         step_time = current_time - self.step_start_time
+        
+        # 如果提供了实时FLOPs，更新当前FLOPs值
+        if real_time_flops is not None and real_time_flops > 0:
+            self.actual_flops = real_time_flops
         
         log_entry = {
             'step': int(step),
@@ -494,6 +560,10 @@ class TrainingMonitor:
             'step_time': float(step_time),
             'timestamp': float(current_time)
         }
+        
+        # 如果有实时FLOPs，也记录到日志中
+        if real_time_flops is not None:
+            log_entry['real_time_flops'] = float(real_time_flops)
         
         self.step_logs.append(log_entry)
         
@@ -508,18 +578,39 @@ class TrainingMonitor:
                 "global_step": int(step)
             }, step=int(step))
             
-            # Perf组 - 包含MFU
+            # Perf组 - 包含MFU（使用实时数据）
             if self.model_ref is not None and self.actual_flops is not None:
-                # 使用实际序列长度（如果可用）
-                seq_length_for_mfu = self.actual_seq_length if self.actual_seq_length is not None else self.seq_length
-                mfu = calculate_mfu(self.model_ref, self.batch_size, seq_length_for_mfu, step_time, self.actual_flops)
-                wandb.log({
+                # 优先使用当前batch的实际序列长度
+                if attention_mask is not None:
+                    # 动态计算当前batch的实际序列长度
+                    current_seq_length = self._calculate_actual_seq_length(attention_mask)
+                elif self.actual_seq_length is not None:
+                    # 使用之前测量的序列长度
+                    current_seq_length = self.actual_seq_length
+                else:
+                    # 使用配置中的默认值
+                    current_seq_length = self.seq_length
+                
+                # 使用最新的FLOPs值计算MFU
+                current_flops = real_time_flops if real_time_flops is not None else self.actual_flops
+                mfu = calculate_mfu(self.model_ref, self.batch_size, current_seq_length, step_time, current_flops)
+                
+                perf_logs = {
                     "perf/mfu": float(mfu),
                     "perf/step_time": float(step_time),
-                    "perf/tokens_per_second": float(self.batch_size * seq_length_for_mfu / step_time),
-                    "perf/actual_flops": float(self.actual_flops),
-                    "perf/actual_seq_length": float(seq_length_for_mfu)
-                }, step=int(step))
+                    "perf/tokens_per_second": float(self.batch_size * current_seq_length / step_time),
+                    "perf/actual_flops": float(current_flops),
+                    "perf/actual_seq_length": float(current_seq_length)
+                }
+                
+                # 如果有实时FLOPs，标记出来
+                if real_time_flops is not None:
+                    perf_logs["perf/real_time_measurement"] = 1.0
+                    perf_logs["perf/flops_per_second"] = float(current_flops / step_time)
+                else:
+                    perf_logs["perf/real_time_measurement"] = 0.0
+                
+                wandb.log(perf_logs, step=int(step))
             
             # System组 - GPU状态 (每10步记录一次)
             if step % 10 == 0:

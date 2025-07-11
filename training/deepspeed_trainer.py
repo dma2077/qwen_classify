@@ -7,7 +7,7 @@ from tqdm import tqdm
 from transformers import AutoProcessor
 from .utils.model_utils import save_hf_model
 from .utils.distributed import DistributedContext
-from .utils.monitor import TrainingMonitor, make_json_serializable
+from .utils.monitor import TrainingMonitor, make_json_serializable, calculate_mfu
 from .utils.evaluation import evaluate_model
 
 class DeepSpeedTrainer:
@@ -78,6 +78,52 @@ class DeepSpeedTrainer:
                     self.dist_ctx.print_main(f"HuggingFace检查点保存到: {hf_dir}")
         
         self.dist_ctx.barrier()
+    
+    def _forward_backward_with_profiling(self, forward_kwargs):
+        """在前向+反向传播过程中实时测量FLOPs"""
+        try:
+            total_flops = 0.0
+            outputs = None
+            loss = None
+            
+            # 检查PyTorch是否支持FLOPs profiling
+            try:
+                # 使用profiler包装完整的前向+反向传播过程
+                with torch.profiler.profile(
+                    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                    record_shapes=True,
+                    with_flops=True,
+                    profile_memory=False
+                ) as prof:
+                    # 前向传播
+                    outputs = self.model(**forward_kwargs)
+                    loss = outputs.loss
+                    
+                    # 反向传播
+                    self.model.backward(loss)
+                
+                # 收集FLOPs统计
+                for event in prof.events():
+                    if hasattr(event, 'flops') and event.flops > 0:
+                        total_flops += event.flops
+                
+                return outputs, loss, float(total_flops)
+                
+            except (AttributeError, TypeError) as e:
+                # 如果profiler不支持with_flops，回退到正常执行
+                print(f"⚠️  Profiler不支持FLOPs测量，使用正常模式: {e}")
+                outputs = self.model(**forward_kwargs)
+                loss = outputs.loss
+                self.model.backward(loss)
+                return outputs, loss, 0.0
+                
+        except Exception as e:
+            print(f"❌ 实时FLOPs测量失败: {e}")
+            # 发生错误时执行正常的前向+反向传播
+            outputs = self.model(**forward_kwargs)
+            loss = outputs.loss
+            self.model.backward(loss)
+            return outputs, loss, 0.0
         
     def evaluate(self):
         """评估模型"""
@@ -173,32 +219,48 @@ class DeepSpeedTrainer:
                 if "image_grid_thw" in batch:
                     forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(self.dist_ctx.device)
                 
-                # 在第一个batch时测量实际FLOPs（仅在主进程执行）
-                if not flops_profiled:
-                    measured_flops = 0.0
-                    if self.dist_ctx.is_main_process:
-                        print("🔍 正在测量模型实际FLOPs...")
-                        self.monitor.profile_model_flops(forward_kwargs)
-                        measured_flops = self.monitor.actual_flops or 0.0
-                    
-                    # 在分布式训练中广播FLOPs测量结果
-                    if self.dist_ctx.world_size > 1:
-                        import torch.distributed as dist
-                        flops_tensor = torch.tensor(measured_flops, dtype=torch.float32, device=self.dist_ctx.device)
-                        dist.broadcast(flops_tensor, src=0)
-                        measured_flops = flops_tensor.item()
-                    
-                    # 确保所有进程都设置了相同的FLOPs值
-                    self.monitor.set_actual_flops(measured_flops)
-                    flops_profiled = True
+                # 决定是否进行实时FLOPs测量
+                should_measure_flops = (
+                    not flops_profiled or  # 第一次测量
+                    (effective_step > 0 and effective_step % 50 == 0)  # 每50个有效步骤重新测量
+                )
                 
-                outputs = self.model(**forward_kwargs)
+                # 实时FLOPs测量和模型前向+反向传播
+                if should_measure_flops and self.dist_ctx.is_main_process:
+                    # 在主进程中进行实时FLOPs测量
+                    outputs, loss, real_time_flops = self._forward_backward_with_profiling(forward_kwargs)
+                    
+                    # 更新FLOPs信息
+                    if real_time_flops > 0:
+                        self.monitor.set_actual_flops(real_time_flops, attention_mask.size(1))
+                        if not flops_profiled:
+                            print(f"✅ 实时测量FLOPs: {real_time_flops:.2e}")
+                else:
+                    # 正常的前向+反向传播（无profiling开销）
+                    outputs = self.model(**forward_kwargs)
+                    loss = outputs.loss
+                    self.model.backward(loss)
+                    real_time_flops = self.monitor.actual_flops  # 使用已有的FLOPs值
                 
-                loss = outputs.loss
+                # 同步FLOPs信息到所有进程
+                if should_measure_flops and self.dist_ctx.world_size > 1:
+                    import torch.distributed as dist
+                    
+                    # 广播实时FLOPs
+                    current_flops = real_time_flops if self.dist_ctx.is_main_process else 0.0
+                    flops_tensor = torch.tensor(current_flops, dtype=torch.float32, device=self.dist_ctx.device)
+                    dist.broadcast(flops_tensor, src=0)
+                    
+                    # 广播序列长度
+                    current_seq_len = attention_mask.size(1) if self.dist_ctx.is_main_process else 0
+                    seq_tensor = torch.tensor(current_seq_len, dtype=torch.float32, device=self.dist_ctx.device)
+                    dist.broadcast(seq_tensor, src=0)
+                    
+                    # 所有进程更新FLOPs信息
+                    self.monitor.set_actual_flops(flops_tensor.item(), int(seq_tensor.item()))
+                
                 epoch_loss += loss.item()
-                
-                # 反向传播
-                self.model.backward(loss)
+                flops_profiled = True
                 
                 # 获取梯度范数
                 grad_norm = self.model.get_global_grad_norm()
@@ -228,11 +290,13 @@ class DeepSpeedTrainer:
                     })
                     
                     # 记录训练指标（只在有效步数时记录）
-                    self.monitor.log_step(effective_step, epoch, loss.item(), grad_norm_value, current_lr)
+                    # 传入实时FLOPs（如果有的话）
+                    step_real_time_flops = real_time_flops if should_measure_flops else None
+                    self.monitor.log_step(effective_step, epoch, loss.item(), grad_norm_value, current_lr, attention_mask, step_real_time_flops)
                 
-                # 详细日志记录（显示有效步数，但基于实际步数判断输出频率）
+                                # 详细日志记录（显示有效步数，但基于实际步数判断输出频率）
                 if self.current_step % logging_steps == 0:
-                    # 使用tqdm.write()来避免与进度条冲突
+                    # 基础日志信息
                     log_message = (
                         f"Step {effective_step:,} | "
                         f"Loss: {loss.item():.4f} | "
@@ -240,6 +304,21 @@ class DeepSpeedTrainer:
                         f"LR: {current_lr:.2e} | "
                         f"Epoch: {epoch + batch_idx/len(self.train_loader):.2f}"
                     )
+                    
+                    # 如果进行了实时FLOPs测量，添加MFU信息
+                    if should_measure_flops and hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
+                        # 计算当前步骤的时间（从上次记录到现在）
+                        current_time = time.time()
+                        actual_step_time = current_time - self.monitor.step_start_time
+                        
+                        current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
+                        current_mfu = calculate_mfu(self.model, self.monitor.batch_size, current_seq_length, 
+                                                  actual_step_time, self.monitor.actual_flops)
+                        log_message += f" | MFU: {current_mfu:.1%}"
+                        
+                        if should_measure_flops:
+                            log_message += " [📊实时测量]"
+                    
                     if self.dist_ctx.is_main_process:
                         pbar.write(log_message)
                 
