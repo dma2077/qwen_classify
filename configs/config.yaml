@@ -7,8 +7,8 @@ data:
   val_jsonl:   "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_test.jsonl"    # Changed to jsonl format
 
 training:
-  epochs:          10
-  lr:              2e-5
+  epochs:          3
+  lr:              1e-5
   weight_decay:    0.01
   warmup_steps:    500
   output_dir:      "./outputs"
