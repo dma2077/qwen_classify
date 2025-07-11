@@ -279,9 +279,13 @@ class DeepSpeedTrainer:
                 else:
                     grad_norm_value = float(grad_norm)
                 
-                # 更新进度条（只在有效步数时更新）
-                if self.current_step % gradient_accumulation_steps == 0:
+                # 检查是否是有效步骤（完成了梯度累积）
+                is_effective_step = self.current_step % gradient_accumulation_steps == 0
+                
+                if is_effective_step:
                     effective_step += 1
+                    
+                    # 更新进度条
                     pbar.update(1)
                     pbar.set_postfix({
                         'loss': f'{loss.item():.4f}',
@@ -289,55 +293,55 @@ class DeepSpeedTrainer:
                         'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
                     })
                     
-                    # 记录训练指标（只在有效步数时记录）
-                    # 传入实时FLOPs（如果有的话）
+                    # 记录训练指标（基于有效步数）
                     step_real_time_flops = real_time_flops if should_measure_flops else None
                     self.monitor.log_step(effective_step, epoch, loss.item(), grad_norm_value, current_lr, attention_mask, step_real_time_flops)
                 
-                                # 详细日志记录（显示有效步数，但基于实际步数判断输出频率）
-                if self.current_step % logging_steps == 0:
-                    # 基础日志信息
-                    log_message = (
-                        f"Step {effective_step:,} | "
-                        f"Loss: {loss.item():.4f} | "
-                        f"Grad Norm: {grad_norm_value:.4f} | "
-                        f"LR: {current_lr:.2e} | "
-                        f"Epoch: {epoch + batch_idx/len(self.train_loader):.2f}"
-                    )
-                    
-                    # 如果进行了实时FLOPs测量，添加MFU信息
-                    if should_measure_flops and hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
-                        # 计算当前步骤的时间（从上次记录到现在）
-                        current_time = time.time()
-                        actual_step_time = current_time - self.monitor.step_start_time
+                    # 详细日志记录（基于有效步数判断输出频率）
+                    if effective_step % logging_steps == 0:
+                        # 基础日志信息
+                        log_message = (
+                            f"Step {effective_step:,} | "
+                            f"Loss: {loss.item():.4f} | "
+                            f"Grad Norm: {grad_norm_value:.4f} | "
+                            f"LR: {current_lr:.2e} | "
+                            f"Epoch: {epoch + batch_idx/len(self.train_loader):.2f}"
+                        )
                         
-                        current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
-                        current_mfu = calculate_mfu(self.model, self.monitor.batch_size, current_seq_length, 
-                                                  actual_step_time, self.monitor.actual_flops)
-                        log_message += f" | MFU: {current_mfu:.1%}"
+                        # 如果进行了实时FLOPs测量，添加MFU信息
+                        if should_measure_flops and hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
+                            # 计算当前步骤的时间（从上次记录到现在）
+                            current_time = time.time()
+                            actual_step_time = current_time - self.monitor.step_start_time
+                            
+                            current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
+                            current_mfu = calculate_mfu(self.model, self.monitor.batch_size, current_seq_length, 
+                                                      actual_step_time, self.monitor.actual_flops)
+                            log_message += f" | MFU: {current_mfu:.1%}"
+                            
+                            if should_measure_flops:
+                                log_message += " [📊实时测量]"
                         
-                        if should_measure_flops:
-                            log_message += " [📊实时测量]"
+                        # 打印日志信息
+                        if self.dist_ctx.is_main_process:
+                            pbar.write(log_message)
                     
-                    if self.dist_ctx.is_main_process:
-                        pbar.write(log_message)
-                
-                # 定期评估（基于有效步数）
-                if effective_step > 0 and effective_step % eval_steps == 0:
-                    # 暂时刷新进度条以避免输出冲突
-                    pbar.clear()
-                    eval_loss, eval_accuracy = self.evaluate()
-                    # 记录评估结果到wandb
-                    self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)
-                    self.model.train()
-                    # 重新显示进度条
-                    pbar.refresh()
-                
-                # 定期保存检查点（基于有效步数）
-                if effective_step > 0 and effective_step % save_steps == 0:
-                    pbar.clear()
-                    self.save_checkpoint(effective_step)
-                    pbar.refresh()
+                    # 定期评估（基于有效步数）
+                    if effective_step > 0 and effective_step % eval_steps == 0:
+                        # 暂时刷新进度条以避免输出冲突
+                        pbar.clear()
+                        eval_loss, eval_accuracy = self.evaluate()
+                        # 记录评估结果到wandb
+                        self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)
+                        self.model.train()
+                        # 重新显示进度条
+                        pbar.refresh()
+                    
+                    # 定期保存检查点（基于有效步数）
+                    if effective_step > 0 and effective_step % save_steps == 0:
+                        pbar.clear()
+                        self.save_checkpoint(effective_step)
+                        pbar.refresh()
             
             # Epoch结束统计
             epoch_time = time.time() - epoch_start_time

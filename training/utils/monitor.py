@@ -409,8 +409,18 @@ class TrainingMonitor:
         self.actual_flops = None  # 存储实际测量的FLOPs
         self.actual_seq_length = None  # 存储实际的序列长度（包含visual tokens）
     
+    def _is_main_process(self):
+        """检查是否是主进程"""
+        try:
+            import torch.distributed as dist
+            if dist.is_available() and dist.is_initialized():
+                return dist.get_rank() == 0
+            return True  # 非分布式训练时默认为主进程
+        except ImportError:
+            return True
+    
     def _init_wandb(self):
-        """初始化wandb"""
+        """初始化wandb（仅在主进程中）"""
         if not WANDB_AVAILABLE:
             return
         
@@ -419,8 +429,25 @@ class TrainingMonitor:
             print("wandb logging disabled in config")
             return
         
+        # 检查是否是分布式训练，如果是则只在主进程中初始化wandb
+        is_main_process = True
         try:
-            # 初始化wandb
+            import torch.distributed as dist
+            if dist.is_available() and dist.is_initialized():
+                # 分布式训练中，只有rank 0进程初始化wandb
+                is_main_process = dist.get_rank() == 0
+                if not is_main_process:
+                    print(f"进程 rank {dist.get_rank()}: 跳过wandb初始化（非主进程）")
+                    return
+        except ImportError:
+            # 如果torch.distributed不可用，默认为主进程
+            pass
+        
+        if not is_main_process:
+            return
+        
+        try:
+            # 只在主进程中初始化wandb
             wandb.init(
                 project=wandb_config.get('project', 'qwen_classification'),
                 name=wandb_config.get('run_name'),
@@ -539,7 +566,7 @@ class TrainingMonitor:
         self.start_time = time.time()
         self.step_start_time = time.time()
         
-        if self.use_wandb:
+        if self.use_wandb and self._is_main_process():
             wandb.log({"training/started": True, "training/start_time": self.start_time})
     
     def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None):
@@ -567,8 +594,8 @@ class TrainingMonitor:
         
         self.step_logs.append(log_entry)
         
-        # 记录到wandb
-        if self.use_wandb:
+        # 记录到wandb（仅主进程）
+        if self.use_wandb and self._is_main_process():
             # Training组 - 包含loss、grad_norm、lr
             wandb.log({
                 "training/loss": float(loss),
@@ -644,8 +671,8 @@ class TrainingMonitor:
         
         self.epoch_logs.append(log_entry)
         
-        # 记录到wandb
-        if self.use_wandb:
+        # 记录到wandb（仅主进程）
+        if self.use_wandb and self._is_main_process():
             wandb.log({
                 "training/epoch_avg_loss": float(avg_loss),
                 "training/epoch_time": float(elapsed_time),
@@ -656,7 +683,7 @@ class TrainingMonitor:
     
     def log_evaluation(self, step: int, eval_loss: float, eval_accuracy: float):
         """记录评估结果 - 在training组中显示accuracy"""
-        if self.use_wandb:
+        if self.use_wandb and self._is_main_process():
             wandb.log({
                 "training/eval_loss": float(eval_loss),
                 "training/eval_accuracy": float(eval_accuracy),
@@ -682,7 +709,7 @@ class TrainingMonitor:
     
     def finish_training(self):
         """结束训练"""
-        if self.use_wandb:
+        if self.use_wandb and self._is_main_process():
             wandb.log({"training/finished": True, "training/total_time": time.time() - self.start_time})
             wandb.finish()
             print("📊 wandb run finished")
