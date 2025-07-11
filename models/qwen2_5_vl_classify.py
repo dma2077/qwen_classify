@@ -53,11 +53,16 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         )
         hidden_states = outputs.last_hidden_state
 
-        if self.config.pad_token_id is not None:
-            mask = input_ids.ne(self.config.pad_token_id)
-            last_positions = mask.sum(dim=1) - 1
+        # 使用attention_mask来获取正确的序列长度（包含visual tokens + text tokens）
+        if attention_mask is not None:
+            # attention_mask覆盖完整序列（visual + text tokens）
+            valid_lengths = attention_mask.sum(dim=1)  # 每个样本的有效长度
+            last_positions = valid_lengths - 1  # 最后一个有效位置
+            # 添加边界检查，确保索引不越界
+            last_positions = torch.clamp(last_positions, min=0, max=hidden_states.size(1)-1)
             pooled = hidden_states[torch.arange(hidden_states.size(0)), last_positions]
         else:
+            # 如果没有attention_mask，使用序列的最后位置
             pooled = hidden_states[:, -1, :]
 
         logits = self.classifier(pooled)

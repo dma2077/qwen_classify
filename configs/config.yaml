@@ -13,8 +13,8 @@ training:
   warmup_steps:    500
   output_dir:      "./outputs"
   logging_steps:   50  # Log training metrics every N steps
-  save_steps:      100  # Save checkpoint every N steps
-  eval_steps:      100  # Evaluate model every N steps (can be same as save_steps)
+  save_steps:      1000  # Save checkpoint every N steps
+  eval_steps:      1000  # Evaluate model every N steps (can be same as save_steps)
   save_hf_format:  true  # Save HuggingFace format during training
   save_deepspeed_format: false  # Save DeepSpeed format (only needed for resuming training)
   num_workers:     0  # Set to 0 to avoid multiprocessing issues

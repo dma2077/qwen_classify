@@ -15,7 +15,8 @@ class DeepSpeedTrainer:
         # 假设配置已经通过prepare_config处理过
         self.config = config
         self.dist_ctx = DistributedContext()
-        self.monitor = TrainingMonitor(self.config['output_dir'])
+        # 传递完整配置给monitor以支持wandb
+        self.monitor = TrainingMonitor(self.config['output_dir'], config)
         self.model = None
         self.train_loader = None
         self.val_loader = None
@@ -42,6 +43,9 @@ class DeepSpeedTrainer:
         
         self.dist_ctx.print_info()
         self.dist_ctx.print_main(f"模型初始化完成，设备: {self.dist_ctx.device}")
+        
+        # 设置monitor的model引用用于MFU计算
+        self.monitor.set_model_ref(self.model)
         
     def save_checkpoint(self, step):
         """保存检查点"""
@@ -135,6 +139,7 @@ class DeepSpeedTrainer:
             print("="*80)
         
         effective_step = 0  # 用于跟踪有效步数
+        flops_profiled = False  # 标记是否已经测量过FLOPs
         
         for epoch in range(num_epochs):
             self.current_epoch = epoch
@@ -167,6 +172,25 @@ class DeepSpeedTrainer:
                 # 检查并添加image_grid_thw参数
                 if "image_grid_thw" in batch:
                     forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(self.dist_ctx.device)
+                
+                # 在第一个batch时测量实际FLOPs（仅在主进程执行）
+                if not flops_profiled:
+                    measured_flops = 0.0
+                    if self.dist_ctx.is_main_process:
+                        print("🔍 正在测量模型实际FLOPs...")
+                        self.monitor.profile_model_flops(forward_kwargs)
+                        measured_flops = self.monitor.actual_flops or 0.0
+                    
+                    # 在分布式训练中广播FLOPs测量结果
+                    if self.dist_ctx.world_size > 1:
+                        import torch.distributed as dist
+                        flops_tensor = torch.tensor(measured_flops, dtype=torch.float32, device=self.dist_ctx.device)
+                        dist.broadcast(flops_tensor, src=0)
+                        measured_flops = flops_tensor.item()
+                    
+                    # 确保所有进程都设置了相同的FLOPs值
+                    self.monitor.set_actual_flops(measured_flops)
+                    flops_profiled = True
                 
                 outputs = self.model(**forward_kwargs)
                 
@@ -224,6 +248,8 @@ class DeepSpeedTrainer:
                     # 暂时刷新进度条以避免输出冲突
                     pbar.clear()
                     eval_loss, eval_accuracy = self.evaluate()
+                    # 记录评估结果到wandb
+                    self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)
                     self.model.train()
                     # 重新显示进度条
                     pbar.refresh()
@@ -264,7 +290,11 @@ class DeepSpeedTrainer:
         if self.dist_ctx.is_main_process:
             print("🎉 训练完成！")
             print(f"📊 最终评估结果 - 损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
+        
+        # 记录最终评估结果并结束wandb run
+        self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)
         self.monitor.save_logs()
+        self.monitor.finish_training()
         
     def load_checkpoint(self, checkpoint_path):
         """加载检查点"""
