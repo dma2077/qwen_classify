@@ -116,14 +116,23 @@ class DeepSpeedTrainer:
         dataset_size = len(self.train_loader.dataset)
         samples_per_gpu = dataloader_steps_per_epoch * micro_batch_size_per_gpu
         
-        self.dist_ctx.print_main(f"总数据集大小: {dataset_size:,}")
-        self.dist_ctx.print_main(f"每GPU处理样本数: {samples_per_gpu:,}")
-        self.dist_ctx.print_main(f"每GPU微批次大小: {micro_batch_size_per_gpu}")
-        self.dist_ctx.print_main(f"梯度累积步数: {gradient_accumulation_steps}")
-        self.dist_ctx.print_main(f"总有效批次大小: {train_batch_size}")
-        self.dist_ctx.print_main(f"每GPU DataLoader步数: {dataloader_steps_per_epoch:,}")
-        self.dist_ctx.print_main(f"有效训练步数每epoch: {effective_steps_per_epoch:,}")
-        self.dist_ctx.print_main(f"总有效训练步数: {total_effective_steps:,}")
+        # 使用更清晰的格式输出训练配置信息
+        if self.dist_ctx.is_main_process:
+            print("="*80)
+            print("🚀 训练配置信息")
+            print("="*80)
+            print(f"📊 数据集配置:")
+            print(f"  • 总数据集大小: {dataset_size:,}")
+            print(f"  • 每GPU处理样本数: {samples_per_gpu:,}")
+            print(f"📦 批次配置:")
+            print(f"  • 每GPU微批次大小: {micro_batch_size_per_gpu}")
+            print(f"  • 梯度累积步数: {gradient_accumulation_steps}")
+            print(f"  • 总有效批次大小: {train_batch_size}")
+            print(f"📈 步数统计:")
+            print(f"  • 每GPU DataLoader步数: {dataloader_steps_per_epoch:,}")
+            print(f"  • 有效训练步数每epoch: {effective_steps_per_epoch:,}")
+            print(f"  • 总有效训练步数: {total_effective_steps:,}")
+            print("="*80)
         
         effective_step = 0  # 用于跟踪有效步数
         
@@ -197,37 +206,62 @@ class DeepSpeedTrainer:
                 
                 # 详细日志记录
                 if self.current_step % logging_steps == 0:
-                    self.dist_ctx.print_main(
-                        f"{{\'loss\': {loss.item():.4f}, \'grad_norm\': {grad_norm_value:.4f}, "
-                        f"\'learning_rate\': {current_lr:.2e}, \'epoch\': {epoch + batch_idx/len(self.train_loader):.2f}}}"
+                    # 使用tqdm.write()来避免与进度条冲突
+                    log_message = (
+                        f"Step {self.current_step:,} | "
+                        f"Loss: {loss.item():.4f} | "
+                        f"Grad Norm: {grad_norm_value:.4f} | "
+                        f"LR: {current_lr:.2e} | "
+                        f"Epoch: {epoch + batch_idx/len(self.train_loader):.2f}"
                     )
+                    if self.dist_ctx.is_main_process:
+                        pbar.write(log_message)
                 
                 # 定期评估（基于有效步数）
                 if effective_step > 0 and effective_step % eval_steps == 0:
-                    self.evaluate()
+                    # 暂时刷新进度条以避免输出冲突
+                    pbar.clear()
+                    eval_loss, eval_accuracy = self.evaluate()
                     self.model.train()
+                    # 重新显示进度条
+                    pbar.refresh()
                 
                 # 定期保存检查点（基于有效步数）
                 if effective_step > 0 and effective_step % save_steps == 0:
+                    pbar.clear()
                     self.save_checkpoint(effective_step)
+                    pbar.refresh()
             
             # Epoch结束统计
             epoch_time = time.time() - epoch_start_time
             avg_loss = epoch_loss / len(self.train_loader)
             self.monitor.log_epoch(epoch, avg_loss, epoch_time)
             
-            self.dist_ctx.print_main(f"Epoch {epoch+1}/{num_epochs} 完成，平均损失: {avg_loss:.4f}，耗时: {epoch_time:.2f}秒")
+            # 使用tqdm.write()输出epoch统计信息
+            epoch_message = (
+                f"📊 Epoch {epoch+1}/{num_epochs} 完成 | "
+                f"平均损失: {avg_loss:.4f} | "
+                f"耗时: {epoch_time:.2f}秒 | "
+                f"有效步数: {effective_step:,}"
+            )
+            if self.dist_ctx.is_main_process:
+                pbar.write(epoch_message)
         
         pbar.close()
         
         # 训练结束前进行最终评估
-        self.dist_ctx.print_main("训练即将完成，进行最终评估...")
-        self.evaluate()
+        if self.dist_ctx.is_main_process:
+            print("\n🎯 训练即将完成，进行最终评估...")
+        eval_loss, eval_accuracy = self.evaluate()
         
         # 保存最终检查点
+        if self.dist_ctx.is_main_process:
+            print(f"💾 保存最终检查点...")
         self.save_checkpoint(effective_step)
         
-        self.dist_ctx.print_main("训练完成！")
+        if self.dist_ctx.is_main_process:
+            print("🎉 训练完成！")
+            print(f"📊 最终评估结果 - 损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
         self.monitor.save_logs()
         
     def load_checkpoint(self, checkpoint_path):
