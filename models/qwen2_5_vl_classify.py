@@ -19,7 +19,8 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
     """
     def __init__(self,
                  pretrained_model_name: str,
-                 num_labels: int):
+                 num_labels: int,
+                 loss_config: dict = None):
         config = AutoConfig.from_pretrained(pretrained_model_name)
         config.num_labels = num_labels
         super().__init__(config)
@@ -34,7 +35,29 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         text_cfg = config.get_text_config()
         hidden_size = text_cfg.hidden_size
         self.classifier = nn.Linear(hidden_size, num_labels)
+        
+        # 设置损失函数
+        self.loss_config = loss_config or {'type': 'cross_entropy'}
+        self.loss_function = self._create_loss_function()
+        
         self.post_init()
+        
+    def _create_loss_function(self):
+        """创建损失函数"""
+        from training.losses import create_loss_function
+        
+        loss_type = self.loss_config.get('type', 'cross_entropy')
+        
+        # 为ArcFace损失传入正确的特征维度
+        if loss_type == 'arcface':
+            text_cfg = self.config.get_text_config()
+            hidden_size = text_cfg.hidden_size
+            self.loss_config.update({
+                'in_features': hidden_size,
+                'out_features': self.config.num_labels
+            })
+            
+        return create_loss_function(loss_type, **self.loss_config)
 
     def forward(
         self,
@@ -65,10 +88,26 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
             # 如果没有attention_mask，使用序列的最后位置
             pooled = hidden_states[:, -1, :]
 
+        # 计算logits
         logits = self.classifier(pooled)
+        
+        # 计算损失
         loss = None
         if labels is not None:
-            loss = nn.CrossEntropyLoss()(logits, labels)
+            loss_type = self.loss_config.get('type', 'cross_entropy')
+            
+            if loss_type == 'arcface':
+                # ArcFace损失需要原始特征和标签
+                loss = self.loss_function(pooled, labels)
+            elif loss_type == 'supcon':
+                # SupCon损失需要特征和标签（需要特殊的数据格式）
+                # 这里简化处理，实际使用时需要准备对比学习的数据格式
+                features = pooled.unsqueeze(1)  # [batch_size, 1, hidden_size]
+                loss = self.loss_function(features, labels)
+            else:
+                # 标准损失函数使用logits和标签
+                loss = self.loss_function(logits, labels)
+                
         return SequenceClassifierOutput(
             loss=loss,
             logits=logits,

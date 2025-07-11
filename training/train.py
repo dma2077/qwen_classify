@@ -39,9 +39,18 @@ def load_config(config_path):
 
 def setup_model(config):
     """设置模型"""
+    # 获取损失函数配置
+    loss_config = config.get('loss', {'type': 'cross_entropy'})
+    
+    # 打印损失函数信息
+    print(f"🎯 使用损失函数: {loss_config.get('type', 'cross_entropy')}")
+    if loss_config.get('type') != 'cross_entropy':
+        print(f"  损失函数参数: {loss_config}")
+    
     model = Qwen2_5_VLForImageClassification(
         pretrained_model_name=config['model']['pretrained_name'],
-        num_labels=config['model']['num_labels']
+        num_labels=config['model']['num_labels'],
+        loss_config=loss_config
     )
     
     # 如果有预训练检查点，加载它

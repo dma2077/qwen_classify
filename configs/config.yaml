@@ -2,6 +2,12 @@ model:
   pretrained_name: "/llm_reco/dehua/model/Qwen2.5-VL-7B-Instruct"  # or your本地路径
   num_labels: 101
 
+# 损失函数配置
+loss:
+  type: "label_smoothing"  # 选项: cross_entropy, focal, label_smoothing, arcface, symmetric_ce
+  smoothing: 0.1
+  temperature: 1.0
+  
 data:
   train_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_train.jsonl"  # Changed to jsonl format
   val_jsonl:   "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_test.jsonl"    # Changed to jsonl format
@@ -10,14 +16,14 @@ training:
   epochs:          3
   lr:              1e-5
   weight_decay:    0.01
-  warmup_steps:    500
+  warmup_steps:    200
   output_dir:      "./outputs"
   logging_steps:   50  # Log training metrics every N steps
-  save_steps:      1000  # Save checkpoint every N steps
-  eval_steps:      1000  # Evaluate model every N steps (can be same as save_steps)
+  save_steps:      200  # Save checkpoint every N steps
+  eval_steps:      200  # Evaluate model every N steps (can be same as save_steps)
   save_hf_format:  true  # Save HuggingFace format during training
   save_deepspeed_format: false  # Save DeepSpeed format (only needed for resuming training)
-  num_workers:     0  # Set to 0 to avoid multiprocessing issues
+  num_workers:     4  # Set to 0 to avoid multiprocessing issues
   use_fused_adam:  true  # Use FusedAdam for better performance
   # Note: micro_batch_size_per_gpu and gradient_accumulation_steps are now in ds_s2.json
 
