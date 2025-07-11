@@ -458,33 +458,38 @@ class TrainingMonitor:
             )
             
             # 记录模型和训练配置
-            if 'model' in self.config:
-                wandb.config.update({
-                    'model_name': self.config['model'].get('pretrained_name', 'unknown'),
-                    'num_labels': self.config['model'].get('num_labels', 'unknown')
-                })
-            
-            if 'training' in self.config:
-                wandb.config.update({
-                    'learning_rate': self.config['training'].get('learning_rate', 'unknown'),
-                    'num_epochs': self.config['training'].get('num_epochs', 'unknown'),
-                    'batch_size': self.config.get('train_batch_size', 'unknown')
-                })
+            try:
+                if 'model' in self.config:
+                    wandb.config.update({
+                        'model_name': self.config['model'].get('pretrained_name', 'unknown'),
+                        'num_labels': self.config['model'].get('num_labels', 'unknown')
+                    })
+                
+                if 'training' in self.config:
+                    wandb.config.update({
+                        'learning_rate': self.config['training'].get('learning_rate', 'unknown'),
+                        'num_epochs': self.config['training'].get('num_epochs', 'unknown'),
+                        'batch_size': self.config.get('train_batch_size', 'unknown')
+                    })
+            except Exception as config_error:
+                print(f"⚠️  wandb配置更新失败: {config_error}")
             
             self.use_wandb = True
             print("✅ wandb initialized successfully")
             
             # 显示wandb链接信息
-            if wandb.run is not None:
-                print(f"📊 wandb project: {wandb.run.project}")
-                print(f"🔗 wandb run: {wandb.run.name}")
-                print(f"🚀 View run at: {wandb.run.url}")
-                if hasattr(wandb.run, 'project_url'):
-                    print(f"⭐ View project at: {wandb.run.project_url()}")
-                else:
-                    # 手动构建项目链接
-                    project_url = f"https://wandb.ai/{wandb.run.entity}/{wandb.run.project}"
-                    print(f"⭐ View project at: {project_url}")
+            try:
+                if wandb.run is not None:
+                    print(f"📊 wandb project: {wandb.run.project}")
+                    print(f"🔗 wandb run: {wandb.run.name}")
+                    print(f"🚀 View run at: {wandb.run.url}")
+                    
+                    # 构建项目链接
+                    if hasattr(wandb.run, 'entity') and hasattr(wandb.run, 'project'):
+                        project_url = f"https://wandb.ai/{wandb.run.entity}/{wandb.run.project}"
+                        print(f"⭐ View project at: {project_url}")
+            except Exception as display_error:
+                print(f"⚠️  wandb链接显示失败: {display_error}")
             
         except Exception as e:
             print(f"❌ Failed to initialize wandb: {e}")
