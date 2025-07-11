@@ -45,11 +45,6 @@ def create_collate_fn(processor):
                 max_length=2048  # 限制文本长度
             )
             
-            # 检查并记录processor输出的键
-            if not hasattr(processor, '_warned_keys'):
-                print(f"Processor output keys: {list(enc.keys())}")
-                processor._warned_keys = True
-            
             # 确保所有必要的键都存在
             if "image_grid_thw" not in enc:
                 print("Warning: image_grid_thw not found in processor output!")

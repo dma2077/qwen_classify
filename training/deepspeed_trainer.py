@@ -182,17 +182,7 @@ class DeepSpeedTrainer:
                 # 更新参数
                 self.model.step()
                 
-                # 更新进度条（只在有效步数时更新）
-                if self.current_step % gradient_accumulation_steps == 0:
-                    effective_step += 1
-                    pbar.update(1)
-                    pbar.set_postfix({
-                        'loss': f'{loss.item():.4f}',
-                        'lr': f'{self.optimizer.param_groups[0]["lr"]:.2e}',
-                        'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
-                    })
-                
-                # 记录训练指标
+                # 记录训练指标（准备数据）
                 current_lr = self.optimizer.param_groups[0]['lr']
                 # 确保grad_norm是float类型，避免JSON序列化错误
                 # 处理grad_norm可能为None的情况
@@ -202,13 +192,25 @@ class DeepSpeedTrainer:
                     grad_norm_value = float(grad_norm.item())
                 else:
                     grad_norm_value = float(grad_norm)
-                self.monitor.log_step(self.current_step, epoch, loss.item(), grad_norm_value, current_lr)
                 
-                # 详细日志记录
+                # 更新进度条（只在有效步数时更新）
+                if self.current_step % gradient_accumulation_steps == 0:
+                    effective_step += 1
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        'loss': f'{loss.item():.4f}',
+                        'lr': f'{current_lr:.2e}',
+                        'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
+                    })
+                    
+                    # 记录训练指标（只在有效步数时记录）
+                    self.monitor.log_step(effective_step, epoch, loss.item(), grad_norm_value, current_lr)
+                
+                # 详细日志记录（显示有效步数，但基于实际步数判断输出频率）
                 if self.current_step % logging_steps == 0:
                     # 使用tqdm.write()来避免与进度条冲突
                     log_message = (
-                        f"Step {self.current_step:,} | "
+                        f"Step {effective_step:,} | "
                         f"Loss: {loss.item():.4f} | "
                         f"Grad Norm: {grad_norm_value:.4f} | "
                         f"LR: {current_lr:.2e} | "
