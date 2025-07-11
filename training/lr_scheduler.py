@@ -29,12 +29,20 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     effective_steps_per_epoch = steps_per_epoch // gradient_accumulation_steps
     num_training_steps = effective_steps_per_epoch * num_epochs
     
-    print(f"每GPU微批次大小: {micro_batch_size_per_gpu}")
-    print(f"梯度累积步数: {gradient_accumulation_steps}")
-    print(f"总有效批次大小: {train_batch_size}")
-    print(f"每GPU DataLoader步数: {steps_per_epoch:,}")
-    print(f"有效训练步数每epoch: {effective_steps_per_epoch:,}")
-    print(f"总有效训练步数: {num_training_steps:,}")
+    # 只在主进程中打印训练配置信息
+    try:
+        import torch.distributed as dist
+        is_main_process = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+    except ImportError:
+        is_main_process = True
+    
+    if is_main_process:
+        print(f"每GPU微批次大小: {micro_batch_size_per_gpu}")
+        print(f"梯度累积步数: {gradient_accumulation_steps}")
+        print(f"总有效批次大小: {train_batch_size}")
+        print(f"每GPU DataLoader步数: {steps_per_epoch:,}")
+        print(f"有效训练步数每epoch: {effective_steps_per_epoch:,}")
+        print(f"总有效训练步数: {num_training_steps:,}")
     
     return get_cosine_schedule_with_warmup(
         optimizer,

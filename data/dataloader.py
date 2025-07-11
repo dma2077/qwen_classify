@@ -42,17 +42,23 @@ def create_dataloaders(config):
     # 检查是否使用分布式训练
     use_distributed = dist.is_available() and dist.is_initialized()
     
-    print(f"分布式检查:")
-    print(f"  • dist.is_available(): {dist.is_available()}")
-    print(f"  • dist.is_initialized(): {dist.is_initialized()}")
-    print(f"  • 使用分布式训练: {use_distributed}")
+    # 只在主进程中打印分布式信息
+    is_main_process = not use_distributed or dist.get_rank() == 0
+    
+    if is_main_process:
+        print(f"分布式检查:")
+        print(f"  • dist.is_available(): {dist.is_available()}")
+        print(f"  • dist.is_initialized(): {dist.is_initialized()}")
+        print(f"  • 使用分布式训练: {use_distributed}")
     
     # 创建分布式采样器（如果使用分布式训练）
     if use_distributed:
         world_size = dist.get_world_size()
         rank = dist.get_rank()
-        print(f"  • 世界大小: {world_size}")
-        print(f"  • 当前进程: {rank}")
+        
+        if is_main_process:
+            print(f"  • 世界大小: {world_size}")
+            print(f"  • 当前进程: {rank}")
         
         train_sampler = DistributedSampler(
             train_dataset,
@@ -67,14 +73,16 @@ def create_dataloaders(config):
         shuffle_train = False  # 分布式采样器已经处理了shuffle
         shuffle_val = False
         
-        print(f"  • 每个GPU将处理训练样本数: {len(train_sampler)}")
-        print(f"  • 每个GPU将处理验证样本数: {len(val_sampler)}")
+        if is_main_process:
+            print(f"  • 每个GPU将处理训练样本数: {len(train_sampler)}")
+            print(f"  • 每个GPU将处理验证样本数: {len(val_sampler)}")
     else:
         train_sampler = None
         val_sampler = None
         shuffle_train = True
         shuffle_val = False
-        print(f"  • 未使用分布式采样器")
+        if is_main_process:
+            print(f"  • 未使用分布式采样器")
     
     # 创建训练数据加载器
     train_loader = DataLoader(
