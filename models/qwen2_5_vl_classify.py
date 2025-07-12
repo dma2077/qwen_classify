@@ -48,16 +48,22 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         
         loss_type = self.loss_config.get('type', 'cross_entropy')
         
+        # 创建损失函数参数的副本，排除'type'键
+        loss_kwargs = {k: v for k, v in self.loss_config.items() if k != 'type'}
+        
         # 为ArcFace损失传入正确的特征维度
         if loss_type == 'arcface':
             text_cfg = self.config.get_text_config()
             hidden_size = text_cfg.hidden_size
-            self.loss_config.update({
+            loss_kwargs.update({
                 'in_features': hidden_size,
                 'out_features': self.config.num_labels
             })
             
-        return create_loss_function(loss_type, **self.loss_config)
+        print(f"📋 创建损失函数: {loss_type}")
+        print(f"📋 损失函数参数: {loss_kwargs}")
+        
+        return create_loss_function(loss_type, **loss_kwargs)
 
     def forward(
         self,

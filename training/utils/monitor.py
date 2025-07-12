@@ -656,18 +656,19 @@ class TrainingMonitor:
                 
                 wandb.log(perf_logs, step=int(step))
             
-            # System组 - GPU状态 (每10步记录一次)
-            if step % 10 == 0:
-                gpu_stats = get_gpu_stats()
-                if gpu_stats:
-                    system_logs = {}
-                    for gpu_id, stats in gpu_stats.items():
-                        # 只记录GPU内存分配和利用率
-                        system_logs[f"system/{gpu_id}_memory_allocated_percent"] = stats['memory_utilization_percent']
-                        system_logs[f"system/{gpu_id}_memory_allocated_gb"] = stats['memory_allocated_gb']
-                    
-                    if system_logs:  # 只有当有有效数据时才记录
-                        wandb.log(system_logs, step=int(step))
+            # System组 - GPU状态 (每10步记录一次) - 已禁用单GPU指标，避免冗余
+            # 注释掉单个GPU指标，减少WandB中的冗余信息
+            # if step % 10 == 0:
+            #     gpu_stats = get_gpu_stats()
+            #     if gpu_stats:
+            #         system_logs = {}
+            #         for gpu_id, stats in gpu_stats.items():
+            #             # 只记录GPU内存分配和利用率
+            #             system_logs[f"system/{gpu_id}_memory_allocated_percent"] = stats['memory_utilization_percent']
+            #             system_logs[f"system/{gpu_id}_memory_allocated_gb"] = stats['memory_allocated_gb']
+            #         
+            #         if system_logs:  # 只有当有有效数据时才记录
+            #             wandb.log(system_logs, step=int(step))
         
         self.step_start_time = current_time
         

@@ -265,42 +265,52 @@ def create_loss_function(loss_type='cross_entropy', **kwargs):
     - 损失函数实例
     """
     
-    if loss_type == 'cross_entropy':
+    # 过滤掉不相关的参数，避免传递错误的参数
+    try:
+        if loss_type == 'cross_entropy':
+            return nn.CrossEntropyLoss()
+        
+        elif loss_type == 'focal':
+            alpha = kwargs.get('alpha', 1.0)
+            gamma = kwargs.get('gamma', 2.0)
+            return FocalLoss(alpha=alpha, gamma=gamma)
+        
+        elif loss_type == 'label_smoothing':
+            smoothing = kwargs.get('smoothing', 0.1)
+            temperature = kwargs.get('temperature', 1.0)
+            return LabelSmoothingCrossEntropy(smoothing=smoothing, temperature=temperature)
+        
+        elif loss_type == 'arcface':
+            in_features = kwargs.get('in_features', 768)
+            out_features = kwargs.get('out_features', 101)
+            s = kwargs.get('s', 30.0)
+            m = kwargs.get('m', 0.5)
+            return ArcFaceLoss(in_features=in_features, out_features=out_features, s=s, m=m)
+        
+        elif loss_type == 'supcon':
+            temperature = kwargs.get('temperature', 0.07)
+            return SupConLoss(temperature=temperature)
+        
+        elif loss_type == 'symmetric_ce':
+            alpha = kwargs.get('alpha', 1.0)
+            beta = kwargs.get('beta', 1.0)
+            num_classes = kwargs.get('num_classes', 101)
+            return SymmetricCrossEntropy(alpha=alpha, beta=beta, num_classes=num_classes)
+        
+        elif loss_type == 'mixup':
+            alpha = kwargs.get('alpha', 1.0)
+            return MixupLoss(alpha=alpha)
+        
+        else:
+            raise ValueError(f"Unknown loss type: {loss_type}")
+            
+    except Exception as e:
+        print(f"❌ 创建损失函数时出错:")
+        print(f"   Loss type: {loss_type}")
+        print(f"   Parameters: {kwargs}")
+        print(f"   Error: {e}")
+        print("   回退到默认的CrossEntropyLoss")
         return nn.CrossEntropyLoss()
-    
-    elif loss_type == 'focal':
-        alpha = kwargs.get('alpha', 1.0)
-        gamma = kwargs.get('gamma', 2.0)
-        return FocalLoss(alpha=alpha, gamma=gamma)
-    
-    elif loss_type == 'label_smoothing':
-        smoothing = kwargs.get('smoothing', 0.1)
-        temperature = kwargs.get('temperature', 1.0)
-        return LabelSmoothingCrossEntropy(smoothing=smoothing, temperature=temperature)
-    
-    elif loss_type == 'arcface':
-        in_features = kwargs.get('in_features', 768)
-        out_features = kwargs.get('out_features', 101)
-        s = kwargs.get('s', 30.0)
-        m = kwargs.get('m', 0.5)
-        return ArcFaceLoss(in_features=in_features, out_features=out_features, s=s, m=m)
-    
-    elif loss_type == 'supcon':
-        temperature = kwargs.get('temperature', 0.07)
-        return SupConLoss(temperature=temperature)
-    
-    elif loss_type == 'symmetric_ce':
-        alpha = kwargs.get('alpha', 1.0)
-        beta = kwargs.get('beta', 1.0)
-        num_classes = kwargs.get('num_classes', 101)
-        return SymmetricCrossEntropy(alpha=alpha, beta=beta, num_classes=num_classes)
-    
-    elif loss_type == 'mixup':
-        alpha = kwargs.get('alpha', 1.0)
-        return MixupLoss(alpha=alpha)
-    
-    else:
-        raise ValueError(f"Unknown loss type: {loss_type}")
 
 # 推荐的损失函数配置
 RECOMMENDED_LOSS_CONFIGS = {
