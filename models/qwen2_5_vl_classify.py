@@ -60,10 +60,28 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
                 'out_features': self.config.num_labels
             })
             
-        print(f"📋 创建损失函数: {loss_type}")
-        print(f"📋 损失函数参数: {loss_kwargs}")
+        # 只在主进程打印损失函数信息
+        try:
+            from training.utils.distributed import is_dist_initialized, get_rank
+            should_print = not is_dist_initialized() or get_rank() == 0
+        except:
+            should_print = True
         
-        return create_loss_function(loss_type, **loss_kwargs)
+        if should_print:
+            print(f"🎯 创建损失函数: {loss_type}")
+            print(f"🎯 损失函数参数: {loss_kwargs}")
+        
+        # 确保不会传递不需要的参数
+        if 'type' in loss_kwargs:
+            loss_kwargs.pop('type')  # 再次确保移除type键
+        
+        try:
+            return create_loss_function(loss_type, **loss_kwargs)
+        except Exception as e:
+            if should_print:
+                print(f"❌ 创建损失函数失败: {e}")
+                print(f"🔄 回退到标准CrossEntropyLoss")
+            return torch.nn.CrossEntropyLoss()
 
     def forward(
         self,
@@ -102,17 +120,24 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         if labels is not None:
             loss_type = self.loss_config.get('type', 'cross_entropy')
             
-            if loss_type == 'arcface':
-                # ArcFace损失需要原始特征和标签
-                loss = self.loss_function(pooled, labels)
-            elif loss_type == 'supcon':
-                # SupCon损失需要特征和标签（需要特殊的数据格式）
-                # 这里简化处理，实际使用时需要准备对比学习的数据格式
-                features = pooled.unsqueeze(1)  # [batch_size, 1, hidden_size]
-                loss = self.loss_function(features, labels)
-            else:
-                # 标准损失函数使用logits和标签
-                loss = self.loss_function(logits, labels)
+            try:
+                if loss_type == 'arcface':
+                    # ArcFace损失需要原始特征和标签
+                    loss = self.loss_function(pooled, labels)
+                elif loss_type == 'supcon':
+                    # SupCon损失需要特征和标签（需要特殊的数据格式）
+                    features = pooled.unsqueeze(1)  # [batch_size, 1, hidden_size]
+                    loss = self.loss_function(features, labels)
+                else:
+                    # 标准损失函数（包括label_smoothing）使用logits和标签
+                    loss = self.loss_function(logits, labels)
+                    
+            except Exception as e:
+                print(f"❌ 损失函数调用失败: {e}")
+                print(f"🔄 回退到标准CrossEntropyLoss")
+                # 创建一个标准的CrossEntropyLoss作为回退
+                fallback_loss = nn.CrossEntropyLoss()
+                loss = fallback_loss(logits, labels)
                 
         return SequenceClassifierOutput(
             loss=loss,

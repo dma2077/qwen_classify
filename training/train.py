@@ -42,10 +42,17 @@ def setup_model(config):
     # 获取损失函数配置
     loss_config = config.get('loss', {'type': 'cross_entropy'})
     
-    # 打印损失函数信息
-    print(f"🎯 使用损失函数: {loss_config.get('type', 'cross_entropy')}")
-    if loss_config.get('type') != 'cross_entropy':
-        print(f"  损失函数参数: {loss_config}")
+    # 打印损失函数信息（只在主进程）
+    try:
+        from training.utils.distributed import is_dist_initialized, get_rank
+        should_print = not is_dist_initialized() or get_rank() == 0
+    except:
+        should_print = True
+    
+    if should_print:
+        print(f"🎯 使用损失函数: {loss_config.get('type', 'cross_entropy')}")
+        if loss_config.get('type') != 'cross_entropy':
+            print(f"  损失函数参数: {loss_config}")
     
     model = Qwen2_5_VLForImageClassification(
         pretrained_model_name=config['model']['pretrained_name'],
