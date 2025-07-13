@@ -29,19 +29,7 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         if hasattr(config, 'use_cache'):
             config.use_cache = False
         
-        # 只在主进程打印配置信息
-        try:
-            from training.utils.distributed import is_dist_initialized, get_rank
-            should_print = not is_dist_initialized() or get_rank() == 0
-        except:
-            should_print = True
-        
-        if should_print:
-            print(f"🔍 模型配置:")
-            print(f"   num_labels: {config.num_labels}")
-            print(f"   problem_type: {getattr(config, 'problem_type', 'None')}")
-            print(f"   config type: {type(config)}")
-            print(f"   loss_config: {loss_config}")
+        # 配置信息已设置完成，无需输出
         
         super().__init__(config)
 
@@ -98,17 +86,6 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         # 计算损失 - 直接在forward中创建，避免继承关系问题
         loss = None
         if labels is not None:
-            # 调试信息
-            try:
-                from training.utils.distributed import is_dist_initialized, get_rank
-                should_print = not is_dist_initialized() or get_rank() == 0
-            except:
-                should_print = True
-            
-            if should_print:
-                print(f"🔍 Forward调用 - logits shape: {logits.shape}")
-                print(f"🔍 Forward调用 - labels shape: {labels.shape}")
-            
             try:
                 # 不使用self.loss_function，直接在这里创建损失函数
                 loss_type = self.loss_config.get('type', 'cross_entropy')
@@ -126,9 +103,6 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
                     # Apply label smoothing
                     targets_smooth = (1 - smoothing) * targets_one_hot + smoothing / logits.size(-1)
                     loss = -torch.sum(targets_smooth * log_probs, dim=-1).mean()
-                    
-                    if should_print:
-                        print(f"✅ Label Smoothing损失计算成功: {loss.item():.4f}")
                         
                 elif loss_type == 'focal':
                     alpha = self.loss_config.get('alpha', 1.0)
@@ -139,27 +113,16 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
                     ce_loss = F.cross_entropy(logits, labels, reduction='none')
                     pt = torch.exp(-ce_loss)
                     loss = (alpha * (1 - pt) ** gamma * ce_loss).mean()
-                    
-                    if should_print:
-                        print(f"✅ Focal Loss损失计算成功: {loss.item():.4f}")
                         
                 else:
                     # 标准CrossEntropyLoss
                     import torch.nn.functional as F
                     loss = F.cross_entropy(logits, labels)
                     
-                    if should_print:
-                        print(f"✅ CrossEntropy损失计算成功: {loss.item():.4f}")
-                    
             except Exception as e:
-                if should_print:
-                    print(f"❌ 损失函数计算失败: {e}")
-                    print(f"🔄 回退到标准F.cross_entropy")
-                # 最终回退
+                # 静默回退到标准损失函数
                 import torch.nn.functional as F
                 loss = F.cross_entropy(logits, labels)
-                if should_print:
-                    print(f"✅ 回退损失函数计算成功: {loss.item():.4f}")
                 
         return SequenceClassifierOutput(
             loss=loss,
