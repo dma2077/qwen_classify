@@ -6,15 +6,21 @@ from tqdm import tqdm
 def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
     """评估模型性能 - 在分布式环境下正确聚合所有GPU的结果"""
     import torch.distributed as dist
-    from training.utils.distributed import is_dist_initialized, get_rank
     
     model.eval()
     total_loss = 0
     correct = 0
     total = 0
     
+    # 检查分布式状态
+    is_distributed = dist.is_available() and dist.is_initialized()
+    if is_distributed:
+        current_rank = dist.get_rank()
+    else:
+        current_rank = 0
+    
     # 只在主进程显示进度条
-    show_progress = not is_dist_initialized() or get_rank() == 0
+    show_progress = not is_distributed or current_rank == 0
     eval_pbar = tqdm(val_loader, desc="Evaluating", leave=False, disable=not show_progress)
     
     batch_count = 0  # 用于计算平均损失
@@ -74,7 +80,7 @@ def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
     eval_pbar.close()
     
     # 在分布式环境下聚合所有GPU的结果
-    if is_dist_initialized():
+    if is_distributed:
         # 转换为tensor进行聚合
         total_loss_tensor = torch.tensor(total_loss, dtype=torch.float32, device=device)
         correct_tensor = torch.tensor(correct, dtype=torch.long, device=device) 
@@ -92,7 +98,7 @@ def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
         global_accuracy = correct_tensor.item() / total_tensor.item() if total_tensor.item() > 0 else 0
         
         # 只在主进程打印全局结果
-        if get_rank() == 0:
+        if current_rank == 0:
             print("\n" + "="*80)
             print("📊 验证集评估结果 (全局聚合)")
             print("="*80)

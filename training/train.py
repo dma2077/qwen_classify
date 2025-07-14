@@ -44,8 +44,13 @@ def setup_model(config):
     
     # 打印损失函数信息（只在主进程）
     try:
-        from training.utils.distributed import is_dist_initialized, get_rank
-        should_print = not is_dist_initialized() or get_rank() == 0
+        import torch.distributed as dist
+        is_distributed = dist.is_available() and dist.is_initialized()
+        if is_distributed:
+            current_rank = dist.get_rank()
+        else:
+            current_rank = 0
+        should_print = not is_distributed or current_rank == 0
     except:
         should_print = True
     
