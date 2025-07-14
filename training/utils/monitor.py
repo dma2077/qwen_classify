@@ -52,10 +52,18 @@ def get_gpu_peak_flops():
             'A100': 312e12,    # A100 80GB
             'A100-SXM': 312e12,
             'A100-PCIE': 312e12,
+            # NVIDIA A800系列 (针对中国市场的A100变体)
+            'A800': 280e12,    # A800 80GB (稍低于A100)
+            'A800-SXM': 280e12,
+            'A800-PCIE': 280e12,
             # NVIDIA H100系列  
             'H100': 989e12,    # H100 80GB
             'H100-SXM': 989e12,
             'H100-PCIE': 756e12,
+            # NVIDIA H800系列 (针对中国市场的H100变体)
+            'H800': 850e12,    # H800 80GB (稍低于H100)
+            'H800-SXM': 850e12,
+            'H800-PCIE': 700e12,
             # NVIDIA V100系列
             'V100': 112e12,    # V100 32GB
             'V100-SXM': 112e12,
@@ -74,10 +82,14 @@ def get_gpu_peak_flops():
         # 查找匹配的GPU
         for gpu_model, peak_flops in gpu_peak_flops.items():
             if gpu_model in gpu_name:
+                # 只在第一次识别时打印（避免频繁输出）
+                if not hasattr(get_gpu_peak_flops, '_gpu_identified'):
+                    print(f"✅ 识别GPU: {gpu_name} -> {gpu_model} ({peak_flops/1e12:.0f} TFLOPs)")
+                    get_gpu_peak_flops._gpu_identified = True
                 return peak_flops
         
         # 如果没有找到匹配的GPU，使用默认值
-        print(f"未识别的GPU类型: {gpu_name}，使用默认峰值性能")
+        print(f"未识别的GPU类型: {gpu_name}，使用默认峰值性能 (A100: 312 TFLOPs)")
         return 312e12  # 默认使用A100的性能
         
     except Exception as e:
