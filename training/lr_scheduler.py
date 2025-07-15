@@ -12,6 +12,7 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     
     支持的调度器类型：
     - cosine: 余弦衰减调度器
+    - cosine_with_hold: 余弦+平稳期调度器
     - linear: 线性衰减调度器  
     - polynomial: 多项式衰减调度器
     - exponential: 指数衰减调度器
@@ -68,6 +69,8 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     # 根据调度器类型创建相应的调度器
     if scheduler_type == 'cosine':
         return create_cosine_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, is_main_process)
+    elif scheduler_type == 'cosine_with_hold':
+        return create_cosine_with_hold_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, is_main_process)
     elif scheduler_type == 'linear':
         return create_linear_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, is_main_process)
     elif scheduler_type == 'polynomial':
@@ -102,6 +105,35 @@ def create_cosine_scheduler(optimizer, lr_config, num_warmup_steps, num_training
             num_training_steps=num_training_steps,
             num_cycles=num_cycles,
         )
+
+
+def create_cosine_with_hold_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, is_main_process):
+    """创建余弦+平稳期调度器"""
+    hold_steps = lr_config.get('hold_steps', None)
+    hold_ratio = lr_config.get('hold_ratio', 0.3)  # 平稳期占总步数的比例
+    final_lr_ratio = lr_config.get('final_lr_ratio', 0.0)
+    num_cycles = lr_config.get('num_cycles', 0.5)
+    
+    # 如果没有指定hold_steps，则根据hold_ratio计算
+    if hold_steps is None:
+        total_non_warmup_steps = num_training_steps - num_warmup_steps
+        hold_steps = int(total_non_warmup_steps * hold_ratio)
+    
+    # 计算各阶段步数
+    decay_steps = num_training_steps - num_warmup_steps - hold_steps
+    
+    if is_main_process:
+        print(f"  • Warmup步数: {num_warmup_steps:,}")
+        print(f"  • Hold平稳期步数: {hold_steps:,}")
+        print(f"  • Cosine衰减步数: {decay_steps:,}")
+        print(f"  • Hold比例: {hold_steps/(num_training_steps-num_warmup_steps):.1%}")
+        print(f"  • 余弦周期数: {num_cycles}")
+        print(f"  • 最终学习率比例: {final_lr_ratio:.1%}")
+        print(f"  • 学习率衰减倍数: {1/final_lr_ratio if final_lr_ratio > 0 else '∞'}x")
+    
+    return create_custom_cosine_with_hold_scheduler(
+        optimizer, num_warmup_steps, hold_steps, num_training_steps, num_cycles, final_lr_ratio
+    )
 
 
 def create_linear_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, is_main_process):
@@ -200,6 +232,33 @@ def create_custom_cosine_scheduler(optimizer, num_warmup_steps, num_training_ste
             return float(current_step) / float(max(1, num_warmup_steps))
         
         progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress))
+        
+        # 在final_lr_ratio和1.0之间进行余弦衰减
+        return final_lr_ratio + (1.0 - final_lr_ratio) * cosine_decay
+    
+    return LambdaLR(optimizer, lr_lambda)
+
+
+def create_custom_cosine_with_hold_scheduler(optimizer, num_warmup_steps, hold_steps, num_training_steps, num_cycles=0.5, final_lr_ratio=0.0):
+    """自定义余弦+平稳期调度器"""
+    def lr_lambda(current_step):
+        # 阶段1: Warmup - 线性增长到目标学习率
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        
+        # 阶段2: Hold - 保持在目标学习率
+        if current_step < num_warmup_steps + hold_steps:
+            return 1.0
+        
+        # 阶段3: Cosine Decay - 余弦衰减
+        decay_start_step = num_warmup_steps + hold_steps
+        decay_steps = num_training_steps - decay_start_step
+        
+        if decay_steps <= 0:
+            return final_lr_ratio
+        
+        progress = float(current_step - decay_start_step) / float(decay_steps)
         cosine_decay = 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress))
         
         # 在final_lr_ratio和1.0之间进行余弦衰减

@@ -22,7 +22,42 @@ lr_scheduler:
 - `final_lr_ratio: 0.1`：衰减到原始LR的10%，衰减倍数为 **10x**
 - `final_lr_ratio: 0.05`：衰减到原始LR的5%，衰减倍数为 **20x**
 
-### 2. **Linear 线性衰减调度器**
+### 2. **Cosine with Hold 余弦+平稳期调度器** 🚀 强烈推荐
+```yaml
+lr_scheduler:
+  type: "cosine_with_hold"
+  hold_ratio: 0.3        # 平稳期占非warmup步数的30%
+  # 或者直接指定步数：
+  # hold_steps: 1000     # 直接指定平稳期步数（优先级高于hold_ratio）
+  final_lr_ratio: 0.05   # 最终学习率为初始LR的5%
+  num_cycles: 0.5        # 余弦周期数
+```
+
+**学习率曲线：**
+```
+   LR
+    │           ┌───────────┐
+    │          /             \
+    │───/─────/                \───
+    │  /     ↑   hold_steps      \
+    │ / warmup   (平稳期)         \  cosine_decay
+    └┴────────────────────────────────→ step
+     warmup    hold phase      decay phase
+```
+
+**特点：**
+- 🎯 **三阶段设计**：Warmup → Hold → Cosine Decay
+- 🚀 **更好的收敛**：高学习率平稳期让模型充分学习
+- 📈 **稳定训练**：避免过早衰减导致的收敛问题
+- 🛠️ **灵活配置**：可按比例或绝对步数设置平稳期
+
+**适用场景：**
+- 复杂任务和大模型训练
+- 需要充分探索的训练任务
+- 多数据集联合训练
+- 从预训练模型微调
+
+### 3. **Linear 线性衰减调度器**
 ```yaml
 lr_scheduler:
   type: "linear"
@@ -38,7 +73,7 @@ lr_scheduler:
 - 训练时间较短的任务
 - 需要快速收敛的场景
 
-### 3. **Polynomial 多项式衰减调度器**
+### 4. **Polynomial 多项式衰减调度器**
 ```yaml
 lr_scheduler:
   type: "polynomial"
@@ -52,7 +87,7 @@ lr_scheduler:
 - 📈 `power>1.0` 前期衰减慢，后期衰减快
 - 📉 `power<1.0` 前期衰减快，后期衰减慢
 
-### 4. **Exponential 指数衰减调度器**
+### 5. **Exponential 指数衰减调度器**
 ```yaml
 lr_scheduler:
   type: "exponential"
@@ -66,7 +101,7 @@ lr_scheduler:
 - ⚡ 早期快速衰减
 - 🎯 适合需要激进学习率衰减的场景
 
-### 5. **Constant 常数调度器**
+### 6. **Constant 常数调度器**
 ```yaml
 lr_scheduler:
   type: "constant"
@@ -78,7 +113,7 @@ lr_scheduler:
 - 🛠️ 适合调试和对比实验
 - ⚡ 简单直接，无需调参
 
-### 6. **Cosine Restarts 带重启的余弦调度器** 🚀 高级
+### 7. **Cosine Restarts 带重启的余弦调度器** 🚀 高级
 ```yaml
 lr_scheduler:
   type: "cosine_restarts"
@@ -104,6 +139,7 @@ lr_scheduler:
 | 调度器类型 | final_lr_ratio | 衰减倍数 | 适用场景 |
 |-----------|---------------|---------|----------|
 | cosine | 0.0 | ∞x | 标准训练 |
+| **cosine_with_hold** | **0.05** | **20x** | **复杂任务（推荐）** |
 | cosine | 0.1 | 10x | 保守衰减 |
 | cosine | 0.05 | 20x | 中等衰减 |
 | linear | 0.05 | 20x | 快速收敛 |
@@ -113,6 +149,17 @@ lr_scheduler:
 *基于5个epoch的计算示例
 
 ## 🔧 配置示例
+
+### 🥇 **最推荐配置（余弦+平稳期）**
+```yaml
+training:
+  lr: 1e-5
+  lr_scheduler:
+    type: "cosine_with_hold"
+    hold_ratio: 0.3  # 30%时间保持高学习率
+    final_lr_ratio: 0.05  # 最终衰减到5%
+    num_cycles: 0.5
+```
 
 ### 保守衰减配置（推荐新手）
 ```yaml
@@ -158,34 +205,51 @@ training:
 
 训练时会在控制台显示学习率配置信息：
 
+### Cosine with Hold 调度器输出示例：
 ```
 📈 学习率调度器配置:
-  • 调度器类型: cosine
+  • 调度器类型: cosine_with_hold
   • Warmup步数: 200
-  • 总训练步数: 5,000
+  • Hold平稳期步数: 1,200
+  • Cosine衰减步数: 2,800
+  • Hold比例: 30.0%
   • 余弦周期数: 0.5
-  • 最终学习率比例: 10.0%
-  • 学习率衰减倍数: 10.0x
+  • 最终学习率比例: 5.0%
+  • 学习率衰减倍数: 20.0x
 ```
 
 ## 🎯 选择建议
 
 ### 🥇 **推荐优先级**
 
-1. **Cosine (final_lr_ratio=0.1)** - 最平衡的选择
-2. **Cosine (final_lr_ratio=0.05)** - 标准深度学习配置  
-3. **Cosine Restarts** - 长期训练和困难任务
-4. **Linear** - 快速实验和短期训练
-5. **Polynomial** - 需要自定义衰减曲线
-6. **Exponential** - 特殊需求场景
+1. **🚀 Cosine with Hold (hold_ratio=0.3, final_lr_ratio=0.05)** - **最佳选择**
+2. **Cosine (final_lr_ratio=0.1)** - 最平衡的选择
+3. **Cosine (final_lr_ratio=0.05)** - 标准深度学习配置  
+4. **Cosine Restarts** - 长期训练和困难任务
+5. **Linear** - 快速实验和短期训练
+6. **Polynomial** - 需要自定义衰减曲线
+7. **Exponential** - 特殊需求场景
 
 ### 🔍 **根据任务特点选择**
 
-- **图像分类**: Cosine (final_lr_ratio=0.05-0.1)
-- **微调预训练模型**: Cosine (final_lr_ratio=0.1) 
-- **从头训练**: Cosine Restarts 或 Linear
+- **🎯 多数据集训练**: **Cosine with Hold (强烈推荐)**
+- **图像分类**: Cosine with Hold 或 Cosine (final_lr_ratio=0.05-0.1)
+- **微调预训练模型**: Cosine with Hold (hold_ratio=0.2-0.4)
+- **从头训练**: Cosine with Hold 或 Cosine Restarts
 - **快速实验**: Linear 或 Constant
-- **长期训练**: Cosine Restarts
+- **长期训练**: Cosine with Hold 或 Cosine Restarts
+
+### 💡 **Cosine with Hold 参数选择指南**
+
+**hold_ratio 建议：**
+- **0.2-0.3**: 标准配置，适合大多数任务
+- **0.3-0.4**: 复杂任务，需要更多高学习率训练
+- **0.1-0.2**: 简单任务，快速收敛
+
+**final_lr_ratio 建议：**
+- **0.05**: 标准配置，20倍衰减
+- **0.1**: 保守配置，10倍衰减  
+- **0.01**: 激进配置，100倍衰减
 
 ## 🚀 高级技巧
 
@@ -194,30 +258,38 @@ training:
 1. 调整 `final_lr_ratio` 参数
 2. 更换调度器类型
 3. 修改 `warmup_steps` 参数
+4. 调整 `hold_ratio` 或 `hold_steps`
 
 ### 监控指标
 通过WandB观察：
 - 学习率曲线变化
 - 训练loss的响应
 - 验证accuracy的变化趋势
+- Hold期间的性能稳定性
 
 ### 实验对比
 建议对比实验：
 ```bash
-# 实验1：标准cosine
+# 实验1：余弦+平稳期（推荐）
+python training/train.py --config configs/multi_datasets_cosine_hold.yaml
+
+# 实验2：标准cosine
 python training/train.py --config configs/multi_datasets_config.yaml
 
-# 实验2：线性衰减
+# 实验3：线性衰减
 python training/train.py --config configs/multi_datasets_linear_scheduler.yaml
 
-# 实验3：带重启的cosine
+# 实验4：带重启的cosine
 python training/train.py --config configs/multi_datasets_cosine_restarts.yaml
 ```
 
 ## ❓ 常见问题
 
-**Q: 为什么cosine调度器效果更好？**
-A: Cosine调度器提供了平滑的衰减曲线，在训练后期保持较小但非零的学习率，有助于精细调整。
+**Q: 为什么余弦+平稳期调度器效果更好？**
+A: 平稳期让模型在高学习率下充分学习，避免过早衰减导致的收敛不充分问题。余弦衰减则在后期提供精细调整。
+
+**Q: hold_ratio设置多少合适？**
+A: 一般建议0.2-0.4，复杂任务可以设置更大的值。可以通过实验找到最佳比例。
 
 **Q: 什么时候使用重启机制？**
 A: 当训练容易陷入局部最优或需要长期训练时，重启机制可以提供跳出局部最优的机会。
@@ -226,4 +298,7 @@ A: 当训练容易陷入局部最优或需要长期训练时，重启机制可�
 A: 一般建议0.05-0.1，具体取决于任务复杂度和训练时长。复杂任务可以设置更大的值。
 
 **Q: warmup_steps如何设置？**
-A: 通常设置为总训练步数的5-10%，或者200-1000步之间。 
+A: 通常设置为总训练步数的5-10%，或者200-1000步之间。
+
+**Q: Cosine with Hold 和普通Cosine的主要区别？**
+A: 主要区别在于Hold期间学习率保持恒定，这样模型可以在高学习率下更充分地学习，通常能获得更好的最终性能。 
