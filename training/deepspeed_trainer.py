@@ -5,10 +5,11 @@ import torch
 import deepspeed
 from tqdm import tqdm
 from transformers import AutoProcessor
+from collections import defaultdict
 from .utils.model_utils import save_hf_model
 from .utils.distributed import DistributedContext
 from .utils.monitor import TrainingMonitor, make_json_serializable, calculate_mfu
-from .utils.evaluation import evaluate_model
+from .utils.evaluation import evaluate_model, evaluate_multi_dataset
 
 class DeepSpeedTrainer:
     def __init__(self, config):
@@ -24,6 +25,40 @@ class DeepSpeedTrainer:
         self.lr_scheduler = None
         self.current_step = 0
         self.current_epoch = 0
+        
+        # 多数据集支持
+        self.dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
+        self.enable_dataset_metrics = self.config.get('wandb', {}).get('log_dataset_metrics', True)
+        
+        # 用于跟踪各数据集的指标
+        self.dataset_metrics = defaultdict(lambda: {
+            'total_loss': 0.0,
+            'total_samples': 0,
+            'correct_samples': 0,
+            'step_count': 0
+        })
+        
+        # 最佳模型追踪
+        self.best_model_config = self.config.get('training', {}).get('best_model_tracking', {})
+        self.best_model_enabled = self.best_model_config.get('enabled', True)
+        self.best_metric_name = self.best_model_config.get('metric', 'overall_accuracy')
+        self.best_metric_mode = self.best_model_config.get('mode', 'max')  # 'max' or 'min'
+        self.save_best_only = self.best_model_config.get('save_best_only', True)
+        
+        # 初始化最佳指标
+        if self.best_metric_mode == 'max':
+            self.best_metric_value = float('-inf')
+        else:
+            self.best_metric_value = float('inf')
+        
+        self.best_model_step = 0
+        self.best_model_path = None
+        
+        # 评估配置
+        self.eval_config = self.config.get('training', {}).get('evaluation', {})
+        self.partial_eval_during_training = self.eval_config.get('partial_eval_during_training', True)
+        self.full_eval_at_end = self.eval_config.get('full_eval_at_end', True)
+        self.eval_best_model_only = self.eval_config.get('eval_best_model_only', True)
         
     def setup_model(self, model, train_loader, val_loader, optimizer, lr_scheduler):
         """设置模型和相关组件"""
@@ -47,9 +82,13 @@ class DeepSpeedTrainer:
         # 设置monitor的model引用用于MFU计算
         self.monitor.set_model_ref(self.model)
         
-    def save_checkpoint(self, step):
+    def save_checkpoint(self, step, is_best=False):
         """保存检查点"""
-        checkpoint_dir = os.path.join(self.config['output_dir'], f"checkpoint-{step}")
+        if is_best:
+            checkpoint_dir = os.path.join(self.config['output_dir'], f"best-model-step-{step}")
+        else:
+            checkpoint_dir = os.path.join(self.config['output_dir'], f"checkpoint-{step}")
+        
         os.makedirs(checkpoint_dir, exist_ok=True)
         
         # 保存训练信息
@@ -57,6 +96,9 @@ class DeepSpeedTrainer:
             'step': step,
             'epoch': self.current_epoch,
             'config': self.config,
+            'dataset_metrics': dict(self.dataset_metrics),  # 保存数据集指标
+            'is_best_model': is_best,
+            'best_metric_value': self.best_metric_value if is_best else None,
             'timestamp': time.time()
         }
         
@@ -68,16 +110,78 @@ class DeepSpeedTrainer:
         if self.config.get('save_deepspeed_format', True):
             deepspeed_dir = os.path.join(checkpoint_dir, 'deepspeed')
             self.model.save_checkpoint(deepspeed_dir)
-            self.dist_ctx.print_main(f"DeepSpeed检查点保存到: {deepspeed_dir}")
+            if is_best:
+                self.dist_ctx.print_main(f"🏆 最佳模型DeepSpeed检查点保存到: {deepspeed_dir}")
+            else:
+                self.dist_ctx.print_main(f"DeepSpeed检查点保存到: {deepspeed_dir}")
         
         # 保存HuggingFace格式（可选）
         if self.config.get('save_hf_format', True):
             if self.dist_ctx.is_main_process:
                 hf_dir = save_hf_model(self.model, self.config, checkpoint_dir)
                 if hf_dir:
-                    self.dist_ctx.print_main(f"HuggingFace检查点保存到: {hf_dir}")
+                    if is_best:
+                        self.dist_ctx.print_main(f"🏆 最佳模型HuggingFace检查点保存到: {hf_dir}")
+                    else:
+                        self.dist_ctx.print_main(f"HuggingFace检查点保存到: {hf_dir}")
+        
+        if is_best:
+            self.best_model_path = checkpoint_dir
         
         self.dist_ctx.barrier()
+        return checkpoint_dir
+    
+    def _is_better_metric(self, current_value, best_value):
+        """判断当前指标是否更好"""
+        if self.best_metric_mode == 'max':
+            return current_value > best_value
+        else:
+            return current_value < best_value
+    
+    def _update_best_model(self, eval_results, step):
+        """更新最佳模型"""
+        if not self.best_model_enabled:
+            return False
+        
+        # 获取当前指标值
+        if self.best_metric_name == 'overall_accuracy':
+            current_value = eval_results.get('overall_accuracy', 0.0)
+        elif self.best_metric_name == 'overall_loss':
+            current_value = eval_results.get('overall_loss', float('inf'))
+        else:
+            # 支持数据集特定指标，如 'food101_accuracy'
+            if 'dataset_metrics' in eval_results:
+                for dataset_name, metrics in eval_results['dataset_metrics'].items():
+                    metric_key = self.best_metric_name.replace(f'{dataset_name}_', '')
+                    if self.best_metric_name.startswith(dataset_name) and metric_key in metrics:
+                        current_value = metrics[metric_key]
+                        break
+                else:
+                    current_value = eval_results.get('overall_accuracy', 0.0)  # 默认使用overall_accuracy
+            else:
+                current_value = eval_results.get('overall_accuracy', 0.0)
+        
+        # 检查是否是最佳模型
+        if self._is_better_metric(current_value, self.best_metric_value):
+            self.best_metric_value = current_value
+            self.best_model_step = step
+            
+            # 保存最佳模型
+            self.save_checkpoint(step, is_best=True)
+            
+            # 记录到wandb
+            self.monitor.log_metrics({
+                'best_model_step': step,
+                f'best_{self.best_metric_name}': current_value
+            }, step)
+            
+            self.dist_ctx.print_main(
+                f"🏆 发现更好模型! {self.best_metric_name}: {current_value:.4f} "
+                f"(步骤 {step})"
+            )
+            return True
+        
+        return False
     
     def _aggregate_loss(self, loss):
         """在分布式训练中聚合loss"""
@@ -99,6 +203,90 @@ class DeepSpeedTrainer:
             # 如果聚合失败，返回当前GPU的loss
             print(f"⚠️  Loss聚合失败，使用当前GPU loss: {e}")
             return loss.item()
+    
+    def _update_dataset_metrics(self, batch, outputs, aggregated_loss):
+        """更新各数据集的指标"""
+        if not self.enable_dataset_metrics:
+            return
+            
+        dataset_names = batch.get("dataset_names", [])
+        labels = batch.get("labels")
+        logits = outputs.logits
+        
+        if not dataset_names or labels is None or logits is None:
+            return
+            
+        # 计算预测结果
+        predictions = torch.argmax(logits, dim=-1)
+        
+        # 按数据集统计指标
+        for i, dataset_name in enumerate(dataset_names):
+            if i >= len(labels) or i >= len(predictions):
+                continue
+                
+            label = labels[i].item()
+            pred = predictions[i].item()
+            
+            # 更新数据集指标
+            self.dataset_metrics[dataset_name]['total_loss'] += aggregated_loss / len(dataset_names)
+            self.dataset_metrics[dataset_name]['total_samples'] += 1
+            self.dataset_metrics[dataset_name]['step_count'] += 1
+            
+            if pred == label:
+                self.dataset_metrics[dataset_name]['correct_samples'] += 1
+    
+    def _log_dataset_metrics(self, step, is_eval=False):
+        """记录各数据集的指标"""
+        if not self.enable_dataset_metrics or not self.dataset_metrics:
+            return
+            
+        prefix = "eval" if is_eval else "train"
+        
+        # 计算并输出各数据集的指标
+        dataset_log_data = {}
+        overall_samples = 0
+        overall_correct = 0
+        
+        for dataset_name, metrics in self.dataset_metrics.items():
+            if metrics['total_samples'] == 0:
+                continue
+                
+            avg_loss = metrics['total_loss'] / metrics['step_count'] if metrics['step_count'] > 0 else 0
+            accuracy = metrics['correct_samples'] / metrics['total_samples']
+            
+            dataset_log_data[f"{prefix}_{dataset_name}_loss"] = avg_loss
+            dataset_log_data[f"{prefix}_{dataset_name}_accuracy"] = accuracy
+            dataset_log_data[f"{prefix}_{dataset_name}_samples"] = metrics['total_samples']
+            
+            # 累计整体指标
+            overall_samples += metrics['total_samples']
+            overall_correct += metrics['correct_samples']
+            
+            # 只在主进程输出详细信息
+            if self.dist_ctx.is_main_process:
+                print(f"📊 {prefix.upper()} - {dataset_name}: "
+                      f"Loss={avg_loss:.4f}, Acc={accuracy:.4f} ({accuracy*100:.2f}%), "
+                      f"Samples={metrics['total_samples']}")
+        
+        # 添加整体指标
+        if overall_samples > 0:
+            overall_accuracy = overall_correct / overall_samples
+            dataset_log_data[f"{prefix}_overall_accuracy"] = overall_accuracy
+            dataset_log_data[f"{prefix}_overall_samples"] = overall_samples
+            dataset_log_data[f"{prefix}_overall_correct"] = overall_correct
+            
+            if self.dist_ctx.is_main_process:
+                print(f"📊 {prefix.upper()} - OVERALL: "
+                      f"Acc={overall_accuracy:.4f} ({overall_accuracy*100:.2f}%), "
+                      f"Samples={overall_samples}")
+        
+        # 记录到wandb
+        if dataset_log_data:
+            self.monitor.log_metrics(dataset_log_data, step, commit=False)
+            
+        # 如果不是eval模式，重置训练指标
+        if not is_eval:
+            self.dataset_metrics.clear()
     
     def _forward_backward_with_profiling(self, forward_kwargs):
         """在前向+反向传播过程中实时测量FLOPs"""
@@ -147,11 +335,116 @@ class DeepSpeedTrainer:
             return outputs, loss, 0.0
         
     def evaluate(self):
-        """评估模型"""
+        """评估模型，支持多数据集评估"""
         self.dist_ctx.print_main("开始评估...")
-        eval_loss, eval_accuracy = evaluate_model(self.model, self.val_loader, self.dist_ctx.device)
-        self.dist_ctx.print_main(f"验证损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
-        return eval_loss, eval_accuracy
+        
+        # 使用多数据集评估函数
+        if self.dataset_configs and self.enable_dataset_metrics:
+            eval_results = evaluate_multi_dataset(self.model, self.val_loader, self.dist_ctx.device, self.dataset_configs)
+            
+            # 记录评估结果到wandb
+            if eval_results and 'dataset_metrics' in eval_results:
+                eval_log_data = {}
+                overall_samples = 0
+                overall_correct = 0
+                
+                for dataset_name, metrics in eval_results['dataset_metrics'].items():
+                    eval_log_data[f"eval_{dataset_name}_loss"] = metrics['loss']
+                    eval_log_data[f"eval_{dataset_name}_accuracy"] = metrics['accuracy']
+                    eval_log_data[f"eval_{dataset_name}_samples"] = metrics['samples']
+                    
+                    overall_samples += metrics['samples']
+                    overall_correct += metrics['correct']
+                
+                # 添加整体指标
+                if overall_samples > 0:
+                    overall_accuracy = overall_correct / overall_samples
+                    eval_log_data["eval_overall_accuracy"] = overall_accuracy
+                    eval_log_data["eval_overall_samples"] = overall_samples
+                    eval_log_data["eval_overall_correct"] = overall_correct
+                
+                self.monitor.log_metrics(eval_log_data, self.current_step)
+                
+                # 更新最佳模型
+                eval_results['overall_accuracy'] = overall_accuracy
+                self._update_best_model(eval_results, self.current_step)
+                
+            return eval_results.get('overall_loss', 0), eval_results.get('overall_accuracy', 0)
+        else:
+            # 使用原有的评估函数
+            eval_loss, eval_accuracy = evaluate_model(self.model, self.val_loader, self.dist_ctx.device)
+            
+            # 更新最佳模型
+            eval_results = {'overall_loss': eval_loss, 'overall_accuracy': eval_accuracy}
+            self._update_best_model(eval_results, self.current_step)
+            
+            self.dist_ctx.print_main(f"验证损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
+            return eval_loss, eval_accuracy
+    
+    def full_evaluation_on_best_model(self):
+        """在最佳模型上进行完整评估"""
+        if not self.full_eval_at_end or not self.best_model_path:
+            return
+        
+        self.dist_ctx.print_main("\n" + "="*80)
+        self.dist_ctx.print_main("🔍 开始对最佳模型进行完整评估")
+        self.dist_ctx.print_main("="*80)
+        
+        # 创建完整评估数据加载器
+        from data.dataloader import create_full_eval_dataloader
+        full_eval_loader = create_full_eval_dataloader(self.config, self.model.module.processor)
+        
+        if full_eval_loader is None:
+            self.dist_ctx.print_main("⚠️ 无法创建完整评估数据加载器，跳过完整评估")
+            return
+        
+        # 进行完整评估
+        if self.dataset_configs and self.enable_dataset_metrics:
+            eval_results = evaluate_multi_dataset(self.model, full_eval_loader, self.dist_ctx.device, self.dataset_configs)
+            
+            # 记录完整评估结果到wandb
+            if eval_results and 'dataset_metrics' in eval_results:
+                eval_log_data = {}
+                overall_samples = 0
+                overall_correct = 0
+                
+                for dataset_name, metrics in eval_results['dataset_metrics'].items():
+                    eval_log_data[f"final_eval_{dataset_name}_loss"] = metrics['loss']
+                    eval_log_data[f"final_eval_{dataset_name}_accuracy"] = metrics['accuracy']
+                    eval_log_data[f"final_eval_{dataset_name}_samples"] = metrics['samples']
+                    
+                    overall_samples += metrics['samples']
+                    overall_correct += metrics['correct']
+                
+                # 添加整体指标
+                if overall_samples > 0:
+                    overall_accuracy = overall_correct / overall_samples
+                    eval_log_data["final_eval_overall_accuracy"] = overall_accuracy
+                    eval_log_data["final_eval_overall_samples"] = overall_samples
+                    eval_log_data["final_eval_overall_correct"] = overall_correct
+                
+                self.monitor.log_metrics(eval_log_data, self.current_step)
+                
+                self.dist_ctx.print_main(f"\n🎯 最佳模型完整评估结果:")
+                self.dist_ctx.print_main(f"   • 整体准确率: {overall_accuracy:.4f} ({overall_accuracy*100:.2f}%)")
+                self.dist_ctx.print_main(f"   • 总样本数: {overall_samples:,}")
+                self.dist_ctx.print_main(f"   • 正确样本数: {overall_correct:,}")
+        else:
+            eval_loss, eval_accuracy = evaluate_model(self.model, full_eval_loader, self.dist_ctx.device)
+            
+            # 记录完整评估结果
+            self.monitor.log_metrics({
+                "final_eval_loss": eval_loss,
+                "final_eval_accuracy": eval_accuracy
+            }, self.current_step)
+            
+            self.dist_ctx.print_main(f"\n🎯 最佳模型完整评估结果:")
+            self.dist_ctx.print_main(f"   • 损失: {eval_loss:.4f}")
+            self.dist_ctx.print_main(f"   • 准确率: {eval_accuracy:.4f} ({eval_accuracy*100:.2f}%)")
+        
+        self.dist_ctx.print_main("="*80)
+        
+        return eval_results if 'eval_results' in locals() else {'overall_loss': eval_loss, 'overall_accuracy': eval_accuracy}
         
     def train(self):
         """训练模型"""
@@ -240,6 +533,12 @@ class DeepSpeedTrainer:
                 if "image_grid_thw" in batch:
                     forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(self.dist_ctx.device)
                 
+                # 添加多数据集支持的参数
+                if "dataset_names" in batch:
+                    forward_kwargs["dataset_names"] = batch["dataset_names"]
+                if "num_classes_list" in batch:
+                    forward_kwargs["num_classes_list"] = batch["num_classes_list"]
+                
                 # 决定是否进行实时FLOPs测量
                 should_measure_flops = (
                     not flops_profiled or  # 第一次测量
@@ -287,6 +586,9 @@ class DeepSpeedTrainer:
                 epoch_loss += aggregated_loss
                 flops_profiled = True
                 
+                # 更新数据集指标
+                self._update_dataset_metrics(batch, outputs, aggregated_loss)
+                
                 # 获取梯度范数
                 grad_norm = self.model.get_global_grad_norm()
                 
@@ -324,6 +626,9 @@ class DeepSpeedTrainer:
                 
                     # 详细日志记录（基于有效步数判断输出频率）
                     if effective_step % logging_steps == 0:
+                        # 记录各数据集的指标
+                        self._log_dataset_metrics(effective_step, is_eval=False)
+                        
                         # 基础日志信息
                         log_message = (
                             f"Step {effective_step:,} | "
@@ -371,7 +676,7 @@ class DeepSpeedTrainer:
             # Epoch结束统计
             epoch_time = time.time() - epoch_start_time
             avg_loss = epoch_loss / len(self.train_loader)
-            self.monitor.log_epoch(epoch, avg_loss, epoch_time)
+            self.monitor.log_epoch(epoch, avg_loss, epoch_time, effective_step)
             
             # 使用tqdm.write()输出epoch统计信息
             epoch_message = (
@@ -395,9 +700,16 @@ class DeepSpeedTrainer:
             print(f"💾 保存最终检查点...")
         self.save_checkpoint(effective_step)
         
+        # 进行完整评估（在最佳模型上）
+        if self.full_eval_at_end:
+            self.full_evaluation_on_best_model()
+        
         if self.dist_ctx.is_main_process:
             print("🎉 训练完成！")
             print(f"📊 最终评估结果 - 损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
+            if self.best_model_enabled:
+                print(f"🏆 最佳模型 - {self.best_metric_name}: {self.best_metric_value:.4f} (步骤 {self.best_model_step})")
+                print(f"🏆 最佳模型路径: {self.best_model_path}")
         
         # 记录最终评估结果并结束wandb run
         self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)

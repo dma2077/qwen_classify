@@ -688,7 +688,7 @@ class TrainingMonitor:
         if step % 100 == 0:
             self.save_logs()
     
-    def log_epoch(self, epoch: int, avg_loss: float, elapsed_time: float):
+    def log_epoch(self, epoch: int, avg_loss: float, elapsed_time: float, current_step: int = None):
         """记录epoch统计"""
         log_entry = {
             'epoch': int(epoch),
@@ -701,22 +701,35 @@ class TrainingMonitor:
         
         # 记录到wandb（仅主进程）
         if self.use_wandb and self._is_main_process():
-            wandb.log({
+            log_data = {
                 "training/epoch_avg_loss": float(avg_loss),
                 "training/epoch_time": float(elapsed_time),
                 "training/epoch_number": int(epoch)
-            }, step=int(epoch))
+            }
+            
+            # 如果提供了current_step，使用它；否则不指定step让wandb自动处理
+            if current_step is not None:
+                wandb.log(log_data, step=int(current_step))
+            else:
+                wandb.log(log_data)
         
         self.save_logs()
     
-    def log_evaluation(self, step: int, eval_loss: float, eval_accuracy: float):
+    def log_evaluation(self, step: int, eval_loss: float, eval_accuracy: float, additional_metrics: dict = None):
         """记录评估结果 - 在training组中显示accuracy"""
         if self.use_wandb and self._is_main_process():
-            wandb.log({
+            log_data = {
                 "training/eval_loss": float(eval_loss),
                 "training/eval_accuracy": float(eval_accuracy),
                 "global_step": int(step)
-            }, step=int(step))
+            }
+            
+            # 添加额外的指标（如整体指标）
+            if additional_metrics:
+                for key, value in additional_metrics.items():
+                    log_data[key] = float(value) if isinstance(value, (int, float)) else value
+            
+            wandb.log(log_data, step=int(step))
     
     def save_logs(self):
         """保存日志到文件"""

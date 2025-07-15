@@ -16,11 +16,14 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
     and applies a classification head on the final token representations.
 
     This class loads pretrained weights from a Qwen2.5-VL-ForConditionalGeneration checkpoint.
+    Supports multi-dataset functionality with logits masking.
     """
-    def __init__(self,
+    def __init__(self,  
                  pretrained_model_name: str,
                  num_labels: int,
-                 loss_config: dict = None):
+                 loss_config: dict = None,
+                 dataset_configs: dict = None,
+                 enable_logits_masking: bool = True):
         config = AutoConfig.from_pretrained(pretrained_model_name)
         config.num_labels = num_labels
         
@@ -46,10 +49,53 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         
         # 设置损失函数配置 - 不创建loss_function对象，避免继承问题
         self.loss_config = loss_config or {'type': 'cross_entropy'}
-        # 注释掉，直接在forward中内联计算损失
-        # self.loss_function = self._create_loss_function()
+        
+        # 多数据集配置
+        self.dataset_configs = dataset_configs or {}
+        self.enable_logits_masking = enable_logits_masking
         
         self.post_init()
+
+    def _apply_logits_masking(self, logits, dataset_names=None, num_classes_list=None):
+        """
+        根据数据集的类别数量对logits进行masking
+        
+        Args:
+            logits: [batch_size, num_labels] 的logits tensor
+            dataset_names: 每个样本的数据集名称列表
+            num_classes_list: 每个样本对应数据集的类别数量列表
+        
+        Returns:
+            masked_logits: masking后的logits tensor
+        """
+        if not self.enable_logits_masking:
+            return logits
+            
+        if dataset_names is None and num_classes_list is None:
+            return logits
+            
+        masked_logits = logits.clone()
+        batch_size = logits.size(0)
+        
+        for i in range(batch_size):
+            num_classes = None
+            
+            # 优先使用直接提供的num_classes
+            if num_classes_list is not None and i < len(num_classes_list):
+                num_classes = num_classes_list[i]
+            
+            # 如果没有直接提供，从dataset_configs中获取
+            if num_classes is None and dataset_names is not None and i < len(dataset_names):
+                dataset_name = dataset_names[i]
+                dataset_config = self.dataset_configs.get(dataset_name, {})
+                num_classes = dataset_config.get("num_classes", None)
+            
+            # 应用masking
+            if num_classes is not None and num_classes < logits.size(-1):
+                # 将超出数据集类别范围的logits设为很小的值（相当于mask掉）
+                masked_logits[i, num_classes:] = float('-inf')
+        
+        return masked_logits
 
     def forward(
         self,
@@ -57,6 +103,8 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         input_ids: torch.LongTensor,
         attention_mask: torch.LongTensor,
         labels: torch.LongTensor = None,
+        dataset_names: list = None,
+        num_classes_list: list = None,
         **kwargs,
     ) -> SequenceClassifierOutput:
         outputs = self.model(
@@ -82,6 +130,10 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
 
         # 计算logits
         logits = self.classifier(pooled)
+        
+        # 应用logits masking
+        if self.enable_logits_masking:
+            logits = self._apply_logits_masking(logits, dataset_names, num_classes_list)
         
         # 计算损失 - 直接在forward中创建，避免继承关系问题
         loss = None

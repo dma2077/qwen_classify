@@ -3,11 +3,21 @@ import torch
 def create_collate_fn(processor):
     """
     返回 collate_fn：将 batch 中的 PIL.Image + messages 转为模型前向需要的 tensors。
+    支持多数据集功能，处理dataset_name和num_classes字段。
     """
     def collate_fn(batch):
         images = [item["image"] for item in batch]
         msgs   = [item["messages"] for item in batch]
         labels = torch.tensor([item["label"] for item in batch], dtype=torch.long)
+        
+        # 处理数据集名称
+        dataset_names = [item.get("dataset_name", "unknown") for item in batch]
+        
+        # 处理类别数量，如果没有提供则设为None
+        num_classes_list = []
+        for item in batch:
+            num_classes = item.get("num_classes", None)
+            num_classes_list.append(num_classes)
 
         # 1) 先把 messages 转成 chat 文本模板
         text_list = []
@@ -57,7 +67,11 @@ def create_collate_fn(processor):
                     enc["image_grid_thw"] = torch.tensor([[1, 16, 16]] * batch_size, dtype=torch.long)
                     print(f"Generated default image_grid_thw: {enc['image_grid_thw']}")
             
+            # 添加标签和多数据集信息
             enc["labels"] = labels
+            enc["dataset_names"] = dataset_names
+            enc["num_classes_list"] = num_classes_list
+            
             return enc
         except Exception as e:
             print(f"Error in processor: {e}")
