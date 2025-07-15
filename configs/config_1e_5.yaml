@@ -4,9 +4,7 @@ model:
 
 # 损失函数配置
 loss:
-  type: "label_smoothing"  # 选项: cross_entropy, focal, label_smoothing, arcface, symmetric_ce
-  smoothing: 0.1
-  temperature: 1.0
+  type: "cross_entropy"  # 选项: cross_entropy, focal, label_smoothing, arcface, symmetric_ce
   
 data:
   train_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_train.jsonl"  # Changed to jsonl format

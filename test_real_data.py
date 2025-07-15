@@ -115,7 +115,7 @@ def test_real_multimodal_data():
             truncation=True,
             max_length=2048
         )
-        
+        print(enc)
         # 添加labels
         enc["labels"] = labels
         

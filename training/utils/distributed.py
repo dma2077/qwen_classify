@@ -21,10 +21,10 @@ class DistributedContext:
     def print_info(self):
         """打印分布式训练信息"""
         if self.is_main_process:
-            print(f"世界大小: {self.world_size}")
-            print(f"当前进程: {self.rank}")
-            print(f"本地进程: {self.local_rank}")
-            print(f"设备: {self.device}")
+            print(f"WORLD_SIZE: {self.world_size}")
+            print(f"rank: {self.rank}")
+            print(f"local_rank: {self.local_rank}")
+            print(f"device: {self.device}")
     
     def barrier(self):
         """同步所有进程"""

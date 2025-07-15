@@ -4,3 +4,4 @@ data/tools
 *.log
 outputs
 */__pycache__/*
+wandb/*
