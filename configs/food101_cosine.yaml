@@ -15,7 +15,7 @@ datasets:
       eval_ratio: 1  # 训练过程中评估20%的数据
   # 单数据集不需要logits masking
   enable_logits_masking: false
-  # 单数据集不需要数据集级shuffle (但样本级shuffle由DataLoader控制)
+  # 单数据集不需要shuffle
   shuffle_datasets: false
 
 data:
@@ -24,11 +24,11 @@ data:
   val_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_test.jsonl"
 
 training:
-  epochs: 5
-  lr: 1e-5
+  epochs: 10
+  lr: 1e-6
   weight_decay: 0.01
   warmup_steps: 200
-  output_dir: "/mmu_mllm_hdd_2/madehua/model/qwen_classify/food101_cosine_hold"
+  output_dir: "/mmu_mllm_hdd_2/madehua/model/qwen_classify/food101_cosine_1e_6"
   logging_steps: 50
   save_steps: 200
   eval_steps: 200
@@ -39,8 +39,7 @@ training:
   
   # 学习率调度器配置
   lr_scheduler:
-    type: "cosine_with_hold"  # 余弦+平稳期调度器
-    hold_ratio: 0.4  # 平稳期占非warmup步数的30%
+    type: "cosine"  # 余弦+平稳期调度器
     final_lr_ratio: 0.1  # 最终学习率为初始学习率的5% (20倍衰减)
     num_cycles: 0.5  # 余弦周期数
   
@@ -67,7 +66,7 @@ deepspeed:
 wandb:
   enabled: true
   project: "qwen_classification"
-  run_name: "food101_cosine_hold"
+  run_name: "food101_cosine_1e_6"
   tags: ["qwen", "deepspeed", "classification", "cosine_hold", "single_dataset"]
   notes: "Qwen2.5-VL Food101 classification with cosine+hold scheduler"
   log_dataset_metrics: false  # 单数据集不需要按数据集分组的指标
