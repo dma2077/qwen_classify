@@ -1,10 +1,13 @@
 model:
-  pretrained_name: "/llm_reco/dehua/model/Qwen2.5-VL-7B-Instruct"
+  pretrained_name: "/llm_reco/dehua/model/Qwen2.5-VL-7B-Instruct"  # or your本地路径
   num_labels: 2000  # 所有数据集中的最大类别数
-  
+
+# 损失函数配置
+loss:
+  type: "cross_entropy"  # 选项: cross_entropy, focal, label_smoothing, arcface, symmetric_ce
+
 # 多数据集配置
 datasets:
-  # 数据集配置，每个数据集指定其类别数和评估比例
   dataset_configs:
     food101:
       num_classes: 101
@@ -32,15 +35,9 @@ datasets:
       eval_ratio: 0.2  # 训练过程中评估10%的数据
   # 如果为true，在预测时会根据数据集名称mask无效的logits
   enable_logits_masking: true
-  # 是否在训练过程中shuffle所有数据集
+  # 是否将所有数据集的数据混合并shuffle
   shuffle_datasets: true
 
-# 损失函数配置
-loss:
-  type: "label_smoothing"  # 选项: cross_entropy, focal, label_smoothing, arcface, symmetric_ce
-  smoothing: 0.1
-  temperature: 1.0
-  
 data:
   # 支持多个训练数据文件路径
   train_jsonl_list:
@@ -72,6 +69,19 @@ training:
   save_deepspeed_format: true  # Save DeepSpeed format (only needed for resuming training)
   num_workers:     16  # Set to 0 to avoid multiprocessing issues
   use_fused_adam:  true  # Use FusedAdam for better performance
+  
+  # 学习率调度器配置
+  lr_scheduler:
+    type: "cosine"  # 可选: cosine, linear, polynomial, exponential, constant, cosine_restarts
+    final_lr_ratio: 0.1  # 最终学习率相对于初始学习率的比例 (10%)
+    # cosine调度器特有参数
+    num_cycles: 0.5  # 余弦周期数，默认0.5
+    # polynomial调度器特有参数
+    # power: 1.0  # 多项式幂次，默认1.0
+    # exponential调度器特有参数  
+    # decay_rate: 0.95  # 指数衰减率，默认0.95
+    # cosine_restarts调度器特有参数
+    # restart_period_epochs: 2  # 重启周期（epochs），默认2
   
   # 最佳模型追踪配置
   best_model_tracking:
