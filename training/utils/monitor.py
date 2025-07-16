@@ -859,12 +859,25 @@ class DummyMonitor:
         self.config = config or {}
         self.use_wandb = False
         
-    def log_step(self, step: int, loss: float, grad_norm: float, lr: float, step_time: float, **kwargs):
+        # 添加必要的属性
+        self.actual_flops = None
+        self.step_start_time = None
+        self.batch_size = config.get('train_batch_size', 32) if config else 32
+        
+    def start_training(self):
+        """空实现，非主进程不启动训练监控"""
+        pass
+        
+    def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None):
         """空实现，非主进程不记录步骤"""
         pass
     
-    def log_epoch(self, epoch: int, avg_loss: float, epoch_time: float, step: int):
+    def log_epoch(self, epoch: int, avg_loss: float, elapsed_time: float, current_step: int = None):
         """空实现，非主进程不记录epoch"""
+        pass
+    
+    def log_evaluation(self, step: int, eval_loss: float, eval_accuracy: float, additional_metrics: dict = None):
+        """空实现，非主进程不记录评估"""
         pass
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
@@ -874,6 +887,14 @@ class DummyMonitor:
     def log_dataset_metrics(self, is_eval: bool = True, step: int = None):
         """空实现，非主进程不记录数据集指标"""
         pass
+    
+    def set_actual_flops(self, flops: float, seq_length: int = None):
+        """空实现，非主进程不设置FLOPs"""
+        pass
+    
+    def _calculate_actual_seq_length(self, attention_mask):
+        """空实现，返回默认值"""
+        return 512  # 返回一个合理的默认值
     
     def save_logs(self):
         """空实现，非主进程不保存日志"""
