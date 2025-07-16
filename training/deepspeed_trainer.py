@@ -9,7 +9,8 @@ from collections import defaultdict
 from .utils.model_utils import save_hf_model
 from .utils.distributed import DistributedContext
 from .utils.evaluation import evaluate_multi_dataset
-from .utils.monitor import TrainingMonitor
+from .utils.monitor import TrainingMonitor, make_json_serializable, calculate_mfu
+from data.dataloader import create_full_eval_dataloader
 
 class DeepSpeedTrainer:
     def __init__(self, config):
@@ -479,8 +480,17 @@ class DeepSpeedTrainer:
         self.dist_ctx.print_main("="*80)
         
         # 创建完整评估数据加载器
-        from data.dataloader import create_full_eval_dataloader
-        full_eval_loader = create_full_eval_dataloader(self.config, self.model.module.processor)
+        # 安全地获取processor，避免DeepSpeed包装导致的属性访问错误
+        try:
+            processor = self.model.module.processor
+        except AttributeError:
+            try:
+                processor = self.model.processor
+            except AttributeError:
+                processor = None
+                self.dist_ctx.print_main("⚠️ 无法获取模型processor，将从配置中重新加载")
+        
+        full_eval_loader = create_full_eval_dataloader(self.config, processor)
         
         if full_eval_loader is None:
             self.dist_ctx.print_main("⚠️ 无法创建完整评估数据加载器，跳过完整评估")
@@ -555,7 +565,6 @@ class DeepSpeedTrainer:
         # 计算有效训练步数（考虑DeepSpeed的分布式训练和梯度累积）
         deepspeed_config = self.config.get('deepspeed', {})
         if isinstance(deepspeed_config, str):
-            import json
             with open(deepspeed_config, 'r') as f:
                 deepspeed_config = json.load(f)
         
@@ -741,7 +750,9 @@ class DeepSpeedTrainer:
                             actual_step_time = current_time - self.monitor.step_start_time
                             
                             current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
-                            current_mfu = calculate_mfu(self.model, self.monitor.batch_size, current_seq_length, 
+                            # 使用实际的批次大小（考虑分布式训练）
+                            actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
+                            current_mfu = calculate_mfu(self.model, actual_batch_size, current_seq_length, 
                                                       actual_step_time, self.monitor.actual_flops)
                             log_message += f" | MFU: {current_mfu:.1%}"
                             
