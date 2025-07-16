@@ -761,10 +761,6 @@ class TrainingMonitor:
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
         """通用的指标记录方法"""
-        # 强制调试输出
-        print(f"🚨 [DEBUG] log_metrics被调用: step={step}, metrics_count={len(metrics)}")
-        print(f"🚨 [DEBUG] metrics keys: {list(metrics.keys())}")
-        
         # 现在只有主进程会创建TrainingMonitor，所以简化检查
         if not WANDB_AVAILABLE:
             print(f"⚠️  wandb不可用，跳过指标记录: {list(metrics.keys())}")
@@ -773,12 +769,9 @@ class TrainingMonitor:
         # 检查wandb是否已初始化
         try:
             import wandb
-            print(f"🚨 [DEBUG] wandb.run检查: {wandb.run is not None}")
             if wandb.run is None:
                 print(f"⚠️  wandb未初始化，跳过指标记录: {list(metrics.keys())}")
                 return
-            else:
-                print(f"🚨 [DEBUG] wandb.run.name: {wandb.run.name}")
         except Exception as e:
             print(f"⚠️  wandb检查失败，跳过指标记录: {e}")
             return
@@ -793,22 +786,15 @@ class TrainingMonitor:
                     log_data[key] = float(value.item())
                 else:
                     log_data[key] = value
-
-            # 强制调试输出
-            print(f"🚨 [DEBUG] 处理后的log_data: {log_data}")
             
             # 记录到wandb
             if step is not None:
-                print(f"🚨 [DEBUG] 调用wandb.log with step={step}")
                 wandb.log(log_data, step=int(step), commit=commit)
-                print(f"🚨 [DEBUG] wandb.log执行完成 with step={step}")
-                # 只为eval指标显示详细信息，减少输出噪音
+                # 只为eval指标显示成功信息
                 if any('eval' in key for key in log_data.keys()):
                     print(f"📊 eval指标已记录到wandb (step={step}): {list(log_data.keys())}")
             else:
-                print(f"🚨 [DEBUG] 调用wandb.log without step")
                 wandb.log(log_data, commit=commit)
-                print(f"🚨 [DEBUG] wandb.log执行完成 without step")
                 if any('eval' in key for key in log_data.keys()):
                     print(f"📊 eval指标已记录到wandb: {list(log_data.keys())}")
                 

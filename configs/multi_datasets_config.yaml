@@ -64,7 +64,7 @@ training:
   output_dir:      "/mmu_mllm_hdd_2/madehua/model/qwen_classify/multi_datasets_1e_5"
   logging_steps:   50  # Log training metrics every N steps
   save_steps:      500  # Save checkpoint every N steps
-  eval_steps:      10  # Evaluate model every N steps (临时改为10用于测试)
+  eval_steps:      500  # Evaluate model every N steps (can be same as save_steps)
   save_hf_format:  true  # Save HuggingFace format during training
   save_deepspeed_format: true  # Save DeepSpeed format (only needed for resuming training)
   num_workers:     16  # Set to 0 to avoid multiprocessing issues
