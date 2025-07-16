@@ -426,9 +426,23 @@ class TrainingMonitor:
         try:
             import torch.distributed as dist
             if dist.is_available() and dist.is_initialized():
-                return dist.get_rank() == 0
-            return True  # 非分布式训练时默认为主进程
+                rank = dist.get_rank()
+                is_main = rank == 0
+                # 只在第一次调用或非主进程时打印
+                if not hasattr(self, '_main_process_checked') or not is_main:
+                    print(f"🔍 分布式训练: rank={rank}, is_main_process={is_main}")
+                    self._main_process_checked = True
+                return is_main
+            else:
+                # 只在第一次调用时打印
+                if not hasattr(self, '_main_process_checked'):
+                    print(f"🔍 单GPU训练: is_main_process=True")
+                    self._main_process_checked = True
+                return True  # 非分布式训练时默认为主进程
         except ImportError:
+            if not hasattr(self, '_main_process_checked'):
+                print(f"🔍 torch.distributed不可用: is_main_process=True")
+                self._main_process_checked = True
             return True
     
     def _init_wandb(self):
@@ -744,9 +758,14 @@ class TrainingMonitor:
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
         """通用的指标记录方法"""
-        if not self.use_wandb or not self._is_main_process():
+        if not self.use_wandb:
+            print(f"⚠️  wandb未启用，跳过指标记录: {list(metrics.keys())}")
             return
         
+        if not self._is_main_process():
+            print(f"⚠️  非主进程，跳过wandb记录 (metrics: {list(metrics.keys())})")
+            return
+
         try:
             # 确保所有值都是可序列化的
             log_data = {}
@@ -757,15 +776,24 @@ class TrainingMonitor:
                     log_data[key] = float(value.item())
                 else:
                     log_data[key] = value
-            
+
+            # 添加详细的debug信息
+            print(f"📊 记录到wandb: step={step}, metrics={list(log_data.keys())}")
+            for key, value in log_data.items():
+                print(f"   {key}: {value}")
+
             # 记录到wandb
             if step is not None:
                 wandb.log(log_data, step=int(step), commit=commit)
+                print(f"✅ 成功记录到wandb (step={step})")
             else:
                 wandb.log(log_data, commit=commit)
+                print(f"✅ 成功记录到wandb (no step)")
                 
         except Exception as e:
-            print(f"记录指标到wandb失败: {e}")
+            print(f"❌ 记录指标到wandb失败: {e}")
+            import traceback
+            traceback.print_exc()
     
     def save_logs(self):
         """保存日志到文件"""

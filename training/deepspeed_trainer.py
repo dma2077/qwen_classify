@@ -440,9 +440,18 @@ class DeepSpeedTrainer:
             # 使用原有的评估函数
             eval_loss, eval_accuracy = evaluate_model(self.model, self.val_loader, self.dist_ctx.device)
             
+            # 记录评估结果到wandb - 放在training组中
+            eval_log_data = {
+                "training/eval_loss": eval_loss,
+                "training/eval_accuracy": eval_accuracy
+            }
+            
+            # 使用传入的步数或当前步数
+            current_step = step if step is not None else self.current_step
+            self.monitor.log_metrics(eval_log_data, current_step)
+            
             # 更新最佳模型
             eval_results = {'overall_loss': eval_loss, 'overall_accuracy': eval_accuracy}
-            current_step = step if step is not None else self.current_step
             self._update_best_model(eval_results, current_step)
             
             self.dist_ctx.print_main(f"验证损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
