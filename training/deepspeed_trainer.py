@@ -411,9 +411,21 @@ class DeepSpeedTrainer:
         """
         self.dist_ctx.print_main("开始评估...")
         
+        # 强制调试输出
+        if self.dist_ctx.is_main_process:
+            print(f"🚨 [DEBUG] evaluate方法被调用: step={step}")
+            print(f"🚨 [DEBUG] dataset_configs存在: {bool(self.dataset_configs)}")
+            print(f"🚨 [DEBUG] enable_dataset_metrics: {self.enable_dataset_metrics}")
+        
         # 使用多数据集评估函数
         if self.dataset_configs and self.enable_dataset_metrics:
             eval_results = evaluate_multi_dataset(self.model, self.val_loader, self.dist_ctx.device, self.dataset_configs)
+            
+            # 强制调试输出
+            if self.dist_ctx.is_main_process:
+                print(f"🚨 [DEBUG] eval_results: {bool(eval_results)}")
+                if eval_results:
+                    print(f"🚨 [DEBUG] eval_results keys: {list(eval_results.keys())}")
             
             # 记录评估结果到wandb - 放在eval组中
             if eval_results and 'dataset_metrics' in eval_results:
@@ -437,6 +449,11 @@ class DeepSpeedTrainer:
                     eval_log_data["eval/overall_samples"] = overall_samples
                     eval_log_data["eval/overall_correct"] = overall_correct
                 
+                # 强制调试输出
+                if self.dist_ctx.is_main_process:
+                    print(f"🚨 [DEBUG] 准备记录eval_log_data: {list(eval_log_data.keys())}")
+                    print(f"🚨 [DEBUG] current_step: {step if step is not None else self.current_step}")
+                
                 # 使用传入的步数或当前步数
                 current_step = step if step is not None else self.current_step
                 self.monitor.log_metrics(eval_log_data, current_step)
@@ -450,11 +467,19 @@ class DeepSpeedTrainer:
             # 使用原有的评估函数
             eval_loss, eval_accuracy = evaluate_model(self.model, self.val_loader, self.dist_ctx.device)
             
+            # 强制调试输出
+            if self.dist_ctx.is_main_process:
+                print(f"🚨 [DEBUG] 单数据集评估: loss={eval_loss:.4f}, accuracy={eval_accuracy:.4f}")
+            
             # 记录评估结果到wandb - 放在eval组中
             eval_log_data = {
                 "eval/loss": eval_loss,
                 "eval/accuracy": eval_accuracy
             }
+            
+            # 强制调试输出
+            if self.dist_ctx.is_main_process:
+                print(f"🚨 [DEBUG] 准备记录单数据集eval_log_data: {list(eval_log_data.keys())}")
             
             # 使用传入的步数或当前步数
             current_step = step if step is not None else self.current_step
@@ -745,9 +770,26 @@ class DeepSpeedTrainer:
                     
                     # 定期评估（基于有效步数）
                     if effective_step > 0 and effective_step % eval_steps == 0:
+                        # 强制调试输出 - 确认evaluate被调用
+                        if self.dist_ctx.is_main_process:
+                            print(f"\n🚨 [DEBUG] 触发评估: effective_step={effective_step}, eval_steps={eval_steps}")
+                            print(f"🚨 [DEBUG] wandb状态检查...")
+                            try:
+                                import wandb
+                                print(f"🚨 [DEBUG] wandb.run存在: {wandb.run is not None}")
+                                if wandb.run:
+                                    print(f"🚨 [DEBUG] wandb.run.name: {wandb.run.name}")
+                            except Exception as e:
+                                print(f"🚨 [DEBUG] wandb检查失败: {e}")
+                        
                         # 暂时刷新进度条以避免输出冲突
                         pbar.clear()
                         eval_loss, eval_accuracy = self.evaluate(step=effective_step)
+                        
+                        # 强制调试输出 - 确认evaluate返回值
+                        if self.dist_ctx.is_main_process:
+                            print(f"🚨 [DEBUG] evaluate返回: loss={eval_loss:.4f}, accuracy={eval_accuracy:.4f}")
+                        
                         # 注意：评估结果已经在evaluate方法中记录到wandb了，无需重复记录
                         self.model.train()
                         # 重新显示进度条
