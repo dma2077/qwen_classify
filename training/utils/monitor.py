@@ -758,12 +758,19 @@ class TrainingMonitor:
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
         """通用的指标记录方法"""
-        if not self.use_wandb:
-            print(f"⚠️  wandb未启用，跳过指标记录: {list(metrics.keys())}")
+        # 现在只有主进程会创建TrainingMonitor，所以简化检查
+        if not WANDB_AVAILABLE:
+            print(f"⚠️  wandb不可用，跳过指标记录: {list(metrics.keys())}")
             return
-        
-        if not self._is_main_process():
-            print(f"⚠️  非主进程，跳过wandb记录 (metrics: {list(metrics.keys())})")
+
+        # 检查wandb是否已初始化
+        try:
+            import wandb
+            if wandb.run is None:
+                print(f"⚠️  wandb未初始化，跳过指标记录: {list(metrics.keys())}")
+                return
+        except Exception as e:
+            print(f"⚠️  wandb检查失败，跳过指标记录: {e}")
             return
 
         try:
@@ -777,18 +784,16 @@ class TrainingMonitor:
                 else:
                     log_data[key] = value
 
-            # 添加详细的debug信息
-            print(f"📊 记录到wandb: step={step}, metrics={list(log_data.keys())}")
-            for key, value in log_data.items():
-                print(f"   {key}: {value}")
-
             # 记录到wandb
             if step is not None:
                 wandb.log(log_data, step=int(step), commit=commit)
-                print(f"✅ 成功记录到wandb (step={step})")
+                # 只为eval指标显示详细信息，减少输出噪音
+                if any('eval' in key for key in log_data.keys()):
+                    print(f"📊 eval指标已记录到wandb (step={step}): {list(log_data.keys())}")
             else:
                 wandb.log(log_data, commit=commit)
-                print(f"✅ 成功记录到wandb (no step)")
+                if any('eval' in key for key in log_data.keys()):
+                    print(f"📊 eval指标已记录到wandb: {list(log_data.keys())}")
                 
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")
@@ -845,3 +850,51 @@ class TrainingMonitor:
             'avg_step_time': avg_step_time,
             'num_steps': len(recent_logs)
         } 
+
+class DummyMonitor:
+    """虚拟监控器，用于非主进程，避免不必要的wandb操作"""
+    
+    def __init__(self, output_dir: str, config: Dict = None, log_file: str = "training_log.json"):
+        self.output_dir = output_dir
+        self.config = config or {}
+        self.use_wandb = False
+        
+    def log_step(self, step: int, loss: float, grad_norm: float, lr: float, step_time: float, **kwargs):
+        """空实现，非主进程不记录步骤"""
+        pass
+    
+    def log_epoch(self, epoch: int, avg_loss: float, epoch_time: float, step: int):
+        """空实现，非主进程不记录epoch"""
+        pass
+    
+    def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
+        """空实现，非主进程不记录指标"""
+        pass
+    
+    def log_dataset_metrics(self, is_eval: bool = True, step: int = None):
+        """空实现，非主进程不记录数据集指标"""
+        pass
+    
+    def save_logs(self):
+        """空实现，非主进程不保存日志"""
+        pass
+    
+    def finish_training(self):
+        """空实现，非主进程不结束wandb"""
+        pass
+    
+    def set_model_ref(self, model):
+        """空实现，非主进程不设置模型引用"""
+        pass
+    
+    def profile_model_flops(self, batch_example: Dict):
+        """空实现，非主进程不计算FLOPs"""
+        pass
+    
+    def get_latest_metrics(self):
+        """空实现，返回None"""
+        return None
+    
+    def get_avg_metrics(self, last_n_steps: int = 100):
+        """空实现，返回空字典"""
+        return {} 

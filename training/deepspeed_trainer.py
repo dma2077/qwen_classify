@@ -16,8 +16,17 @@ class DeepSpeedTrainer:
         # 假设配置已经通过prepare_config处理过
         self.config = config
         self.dist_ctx = DistributedContext()
-        # 传递完整配置给monitor以支持wandb
-        self.monitor = TrainingMonitor(self.config['output_dir'], config)
+        
+        # 只在主进程创建完整的TrainingMonitor，非主进程使用DummyMonitor
+        if self.dist_ctx.is_main_process:
+            from training.utils.monitor import TrainingMonitor
+            self.monitor = TrainingMonitor(self.config['output_dir'], config)
+            print("✅ 主进程：创建完整TrainingMonitor（包含wandb）")
+        else:
+            from training.utils.monitor import DummyMonitor  
+            self.monitor = DummyMonitor(self.config['output_dir'], config)
+            print(f"ℹ️  进程 rank {self.dist_ctx.rank}：使用DummyMonitor（无wandb）")
+        
         self.model = None
         self.train_loader = None
         self.val_loader = None
