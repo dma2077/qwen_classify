@@ -334,8 +334,12 @@ class DeepSpeedTrainer:
             self.model.backward(loss)
             return outputs, loss, 0.0
         
-    def evaluate(self):
-        """评估模型，支持多数据集评估"""
+    def evaluate(self, step=None):
+        """评估模型，支持多数据集评估
+        
+        Args:
+            step: 当前步数，如果提供则用于最佳模型保存；否则使用self.current_step
+        """
         self.dist_ctx.print_main("开始评估...")
         
         # 使用多数据集评估函数
@@ -363,11 +367,13 @@ class DeepSpeedTrainer:
                     eval_log_data["eval_overall_samples"] = overall_samples
                     eval_log_data["eval_overall_correct"] = overall_correct
                 
-                self.monitor.log_metrics(eval_log_data, self.current_step)
+                # 使用传入的步数或当前步数
+                current_step = step if step is not None else self.current_step
+                self.monitor.log_metrics(eval_log_data, current_step)
                 
                 # 更新最佳模型
                 eval_results['overall_accuracy'] = overall_accuracy
-                self._update_best_model(eval_results, self.current_step)
+                self._update_best_model(eval_results, current_step)
                 
             return eval_results.get('overall_loss', 0), eval_results.get('overall_accuracy', 0)
         else:
@@ -376,7 +382,8 @@ class DeepSpeedTrainer:
             
             # 更新最佳模型
             eval_results = {'overall_loss': eval_loss, 'overall_accuracy': eval_accuracy}
-            self._update_best_model(eval_results, self.current_step)
+            current_step = step if step is not None else self.current_step
+            self._update_best_model(eval_results, current_step)
             
             self.dist_ctx.print_main(f"验证损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
             return eval_loss, eval_accuracy
@@ -660,7 +667,7 @@ class DeepSpeedTrainer:
                     if effective_step > 0 and effective_step % eval_steps == 0:
                         # 暂时刷新进度条以避免输出冲突
                         pbar.clear()
-                        eval_loss, eval_accuracy = self.evaluate()
+                        eval_loss, eval_accuracy = self.evaluate(step=effective_step)
                         # 记录评估结果到wandb
                         self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)
                         self.model.train()
