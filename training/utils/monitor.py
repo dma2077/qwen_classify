@@ -610,7 +610,7 @@ class TrainingMonitor:
         self.step_start_time = time.time()
         
         if self.use_wandb and self._is_main_process():
-            wandb.log({"training/started": True, "training/start_time": self.start_time})
+            wandb.log({"training/started": True, "training/start_time": self.start_time}, commit=True)
     
     def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None):
         """记录训练步骤"""
@@ -639,43 +639,40 @@ class TrainingMonitor:
         
         # 记录到wandb（仅主进程）
         if self.use_wandb and self._is_main_process():
-            # 减少WandB日志频率以降低主进程开销
-            should_log_detailed = (step % 10 == 0)  # 每10步记录详细信息
-            
-            # 基础训练指标 - 每步都记录
-            wandb.log({
+            # 准备所有指标
+            wandb_data = {
                 "training/loss": float(loss),
                 "training/lr": float(learning_rate),
+                "training/grad_norm": float(grad_norm),
+                "training/epoch": float(epoch),
                 "global_step": int(step)
-            }, step=int(step), commit=False)
+            }
             
-            # 详细指标 - 减少频率
+            # 减少详细指标记录频率以降低开销
+            should_log_detailed = (step % 10 == 0)
+            
             if should_log_detailed:
-                detailed_logs = {
-                    "training/grad_norm": float(grad_norm),
-                    "training/epoch": float(epoch),
-                }
+                # 添加性能指标
+                wandb_data.update({
+                    "perf/step_time": float(step_time),
+                })
                 
-                # Perf组 - 包含MFU（使用实时数据）
+                # MFU和FLOP相关指标
                 if self.model_ref is not None and self.actual_flops is not None:
                     # 优先使用当前batch的实际序列长度
                     if attention_mask is not None:
-                        # 动态计算当前batch的实际序列长度
                         current_seq_length = self._calculate_actual_seq_length(attention_mask)
                     elif self.actual_seq_length is not None:
-                        # 使用之前测量的序列长度
                         current_seq_length = self.actual_seq_length
                     else:
-                        # 使用配置中的默认值
                         current_seq_length = self.seq_length
                     
                     # 使用最新的FLOPs值计算MFU
                     current_flops = real_time_flops if real_time_flops is not None else self.actual_flops
                     mfu = calculate_mfu(self.model_ref, self.batch_size, current_seq_length, step_time, current_flops)
                     
-                    detailed_logs.update({
+                    wandb_data.update({
                         "perf/mfu": float(mfu),
-                        "perf/step_time": float(step_time),
                         "perf/tokens_per_second": float(self.batch_size * current_seq_length / step_time),
                         "perf/actual_flops": float(current_flops),
                         "perf/actual_seq_length": float(current_seq_length)
@@ -683,29 +680,13 @@ class TrainingMonitor:
                     
                     # 如果有实时FLOPs，标记出来
                     if real_time_flops is not None:
-                        detailed_logs["perf/real_time_measurement"] = 1.0
-                        detailed_logs["perf/flops_per_second"] = float(current_flops / step_time)
+                        wandb_data["perf/real_time_measurement"] = 1.0
+                        wandb_data["perf/flops_per_second"] = float(current_flops / step_time)
                     else:
-                        detailed_logs["perf/real_time_measurement"] = 0.0
-                
-                wandb.log(detailed_logs, step=int(step), commit=True)
-            else:
-                # 提交基础日志
-                wandb.log({}, step=int(step), commit=True)
+                        wandb_data["perf/real_time_measurement"] = 0.0
             
-            # System组 - GPU状态 (每10步记录一次) - 已禁用单GPU指标，避免冗余
-            # 注释掉单个GPU指标，减少WandB中的冗余信息
-            # if step % 10 == 0:
-            #     gpu_stats = get_gpu_stats()
-            #     if gpu_stats:
-            #         system_logs = {}
-            #         for gpu_id, stats in gpu_stats.items():
-            #             # 只记录GPU内存分配和利用率
-            #             system_logs[f"system/{gpu_id}_memory_allocated_percent"] = stats['memory_utilization_percent']
-            #             system_logs[f"system/{gpu_id}_memory_allocated_gb"] = stats['memory_allocated_gb']
-            #         
-            #         if system_logs:  # 只有当有有效数据时才记录
-            #             wandb.log(system_logs, step=int(step))
+            # 一次性记录所有指标，确保commit
+            wandb.log(wandb_data, step=int(step), commit=True)
         
         self.step_start_time = current_time
         
@@ -734,9 +715,9 @@ class TrainingMonitor:
             
             # 如果提供了current_step，使用它；否则不指定step让wandb自动处理
             if current_step is not None:
-                wandb.log(log_data, step=int(current_step))
+                wandb.log(log_data, step=int(current_step), commit=True)
             else:
-                wandb.log(log_data)
+                wandb.log(log_data, commit=True)
         
         self.save_logs()
     
@@ -757,7 +738,7 @@ class TrainingMonitor:
                         key = f"eval/{key}"
                     log_data[key] = float(value) if isinstance(value, (int, float)) else value
             
-            wandb.log(log_data, step=int(step))
+            wandb.log(log_data, step=int(step), commit=True)
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
         """通用的指标记录方法"""
@@ -823,7 +804,7 @@ class TrainingMonitor:
     def finish_training(self):
         """结束训练"""
         if self.use_wandb and self._is_main_process():
-            wandb.log({"training/finished": True, "training/total_time": time.time() - self.start_time})
+            wandb.log({"training/finished": True, "training/total_time": time.time() - self.start_time}, commit=True)
             wandb.finish()
             print("📊 wandb run finished")
     
