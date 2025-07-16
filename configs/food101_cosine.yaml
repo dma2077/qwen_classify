@@ -39,9 +39,9 @@ training:
   
   # 学习率调度器配置
   lr_scheduler:
-    type: "cosine"  # 余弦+平稳期调度器
-    final_lr_ratio: 0.1  # 最终学习率为初始学习率的5% (20倍衰减)
-    num_cycles: 0.5  # 余弦周期数
+    type: "cosine"  # 标准余弦衰减调度器
+    final_lr_ratio: 0.1  # 最终学习率为初始学习率的10% (10倍衰减)
+    num_cycles: 0.5  # 半个余弦周期 (从峰值平滑下降)
   
   # 最佳模型追踪配置
   best_model_tracking:

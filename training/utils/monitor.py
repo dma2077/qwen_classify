@@ -731,6 +731,31 @@ class TrainingMonitor:
             
             wandb.log(log_data, step=int(step))
     
+    def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
+        """通用的指标记录方法"""
+        if not self.use_wandb or not self._is_main_process():
+            return
+        
+        try:
+            # 确保所有值都是可序列化的
+            log_data = {}
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)):
+                    log_data[key] = float(value)
+                elif hasattr(value, 'item'):  # torch tensor
+                    log_data[key] = float(value.item())
+                else:
+                    log_data[key] = value
+            
+            # 记录到wandb
+            if step is not None:
+                wandb.log(log_data, step=int(step), commit=commit)
+            else:
+                wandb.log(log_data, commit=commit)
+                
+        except Exception as e:
+            print(f"记录指标到wandb失败: {e}")
+    
     def save_logs(self):
         """保存日志到文件"""
         try:
