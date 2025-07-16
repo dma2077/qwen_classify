@@ -456,6 +456,12 @@ class DeepSpeedTrainer:
         
         # 记录到wandb
         current_step = step if step is not None else self.current_step
+        
+        # 添加调试信息
+        self.dist_ctx.print_main(f"🔍 准备记录eval指标到wandb (step={current_step}):")
+        for key, value in eval_log_data.items():
+            self.dist_ctx.print_main(f"   • {key}: {value}")
+        
         self.monitor.log_metrics(eval_log_data, current_step)
         
         # 更新最佳模型
