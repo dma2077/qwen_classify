@@ -741,17 +741,20 @@ class TrainingMonitor:
         self.save_logs()
     
     def log_evaluation(self, step: int, eval_loss: float, eval_accuracy: float, additional_metrics: dict = None):
-        """记录评估结果 - 在training组中显示accuracy"""
+        """记录评估结果 - 在eval组中显示指标"""
         if self.use_wandb and self._is_main_process():
             log_data = {
-                "training/eval_loss": float(eval_loss),
-                "training/eval_accuracy": float(eval_accuracy),
+                "eval/loss": float(eval_loss),
+                "eval/accuracy": float(eval_accuracy),
                 "global_step": int(step)
             }
             
-            # 添加额外的指标（如整体指标）
+            # 添加额外的指标
             if additional_metrics:
                 for key, value in additional_metrics.items():
+                    # 确保额外指标也在eval组中
+                    if not key.startswith('eval/'):
+                        key = f"eval/{key}"
                     log_data[key] = float(value) if isinstance(value, (int, float)) else value
             
             wandb.log(log_data, step=int(step))

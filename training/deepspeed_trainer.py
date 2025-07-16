@@ -415,16 +415,16 @@ class DeepSpeedTrainer:
         if self.dataset_configs and self.enable_dataset_metrics:
             eval_results = evaluate_multi_dataset(self.model, self.val_loader, self.dist_ctx.device, self.dataset_configs)
             
-            # 记录评估结果到wandb - 放在training组中
+            # 记录评估结果到wandb - 放在eval组中
             if eval_results and 'dataset_metrics' in eval_results:
                 eval_log_data = {}
                 overall_samples = 0
                 overall_correct = 0
                 
                 for dataset_name, metrics in eval_results['dataset_metrics'].items():
-                    eval_log_data[f"training/eval_{dataset_name}_loss"] = metrics['loss']
-                    eval_log_data[f"training/eval_{dataset_name}_accuracy"] = metrics['accuracy']
-                    eval_log_data[f"training/eval_{dataset_name}_samples"] = metrics['samples']
+                    eval_log_data[f"eval/{dataset_name}_loss"] = metrics['loss']
+                    eval_log_data[f"eval/{dataset_name}_accuracy"] = metrics['accuracy']
+                    eval_log_data[f"eval/{dataset_name}_samples"] = metrics['samples']
                     
                     overall_samples += metrics['samples']
                     overall_correct += metrics['correct']
@@ -432,9 +432,10 @@ class DeepSpeedTrainer:
                 # 添加整体指标
                 if overall_samples > 0:
                     overall_accuracy = overall_correct / overall_samples
-                    eval_log_data["training/eval_overall_accuracy"] = overall_accuracy
-                    eval_log_data["training/eval_overall_samples"] = overall_samples
-                    eval_log_data["training/eval_overall_correct"] = overall_correct
+                    eval_log_data["eval/overall_loss"] = eval_results.get('overall_loss', 0)
+                    eval_log_data["eval/overall_accuracy"] = overall_accuracy
+                    eval_log_data["eval/overall_samples"] = overall_samples
+                    eval_log_data["eval/overall_correct"] = overall_correct
                 
                 # 使用传入的步数或当前步数
                 current_step = step if step is not None else self.current_step
@@ -449,10 +450,10 @@ class DeepSpeedTrainer:
             # 使用原有的评估函数
             eval_loss, eval_accuracy = evaluate_model(self.model, self.val_loader, self.dist_ctx.device)
             
-            # 记录评估结果到wandb - 放在training组中
+            # 记录评估结果到wandb - 放在eval组中
             eval_log_data = {
-                "training/eval_loss": eval_loss,
-                "training/eval_accuracy": eval_accuracy
+                "eval/loss": eval_loss,
+                "eval/accuracy": eval_accuracy
             }
             
             # 使用传入的步数或当前步数
@@ -487,16 +488,16 @@ class DeepSpeedTrainer:
         if self.dataset_configs and self.enable_dataset_metrics:
             eval_results = evaluate_multi_dataset(self.model, full_eval_loader, self.dist_ctx.device, self.dataset_configs)
             
-            # 记录完整评估结果到wandb - 放在training组中
+            # 记录完整评估结果到wandb - 放在eval组中
             if eval_results and 'dataset_metrics' in eval_results:
                 eval_log_data = {}
                 overall_samples = 0
                 overall_correct = 0
                 
                 for dataset_name, metrics in eval_results['dataset_metrics'].items():
-                    eval_log_data[f"training/final_eval_{dataset_name}_loss"] = metrics['loss']
-                    eval_log_data[f"training/final_eval_{dataset_name}_accuracy"] = metrics['accuracy']
-                    eval_log_data[f"training/final_eval_{dataset_name}_samples"] = metrics['samples']
+                    eval_log_data[f"eval/final_{dataset_name}_loss"] = metrics['loss']
+                    eval_log_data[f"eval/final_{dataset_name}_accuracy"] = metrics['accuracy']
+                    eval_log_data[f"eval/final_{dataset_name}_samples"] = metrics['samples']
                     
                     overall_samples += metrics['samples']
                     overall_correct += metrics['correct']
@@ -504,9 +505,10 @@ class DeepSpeedTrainer:
                 # 添加整体指标
                 if overall_samples > 0:
                     overall_accuracy = overall_correct / overall_samples
-                    eval_log_data["training/final_eval_overall_accuracy"] = overall_accuracy
-                    eval_log_data["training/final_eval_overall_samples"] = overall_samples
-                    eval_log_data["training/final_eval_overall_correct"] = overall_correct
+                    eval_log_data["eval/final_overall_loss"] = eval_results.get('overall_loss', 0)
+                    eval_log_data["eval/final_overall_accuracy"] = overall_accuracy
+                    eval_log_data["eval/final_overall_samples"] = overall_samples
+                    eval_log_data["eval/final_overall_correct"] = overall_correct
                 
                 self.monitor.log_metrics(eval_log_data, self.best_model_step)
                 
@@ -517,10 +519,10 @@ class DeepSpeedTrainer:
         else:
             eval_loss, eval_accuracy = evaluate_model(self.model, full_eval_loader, self.dist_ctx.device)
             
-            # 记录完整评估结果 - 放在training组中
+            # 记录完整评估结果 - 放在eval组中
             self.monitor.log_metrics({
-                "training/final_eval_loss": eval_loss,
-                "training/final_eval_accuracy": eval_accuracy
+                "eval/final_loss": eval_loss,
+                "eval/final_accuracy": eval_accuracy
             }, self.best_model_step)
             
             self.dist_ctx.print_main(f"\n🎯 最佳模型完整评估结果:")
