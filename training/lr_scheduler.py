@@ -7,6 +7,48 @@ from transformers import (
 )
 from torch.optim.lr_scheduler import LambdaLR
 
+def _calculate_warmup_steps(warmup_config, total_training_steps):
+    """计算warmup步数，支持绝对值和比例
+    
+    Args:
+        warmup_config: warmup配置，可以是：
+            - int/str: 绝对步数 (如 200)
+            - float: 比例 (如 0.1 表示总步数的10%)
+        total_training_steps: 总训练步数
+        
+    Returns:
+        int: 实际的warmup步数
+    """
+    # 类型转换和处理
+    if isinstance(warmup_config, str):
+        try:
+            # 尝试转换为float以支持字符串形式的比例 (如 "0.1")
+            warmup_value = float(warmup_config)
+        except ValueError:
+            # 如果转换失败，当作整数处理
+            warmup_value = int(warmup_config)
+    else:
+        warmup_value = warmup_config
+    
+    # 判断是比例还是绝对值
+    if isinstance(warmup_value, float) and 0 < warmup_value < 1:
+        # 比例形式：0 < value < 1
+        num_warmup_steps = int(warmup_value * total_training_steps)
+        warmup_type = f"比例 ({warmup_value:.1%})"
+    elif isinstance(warmup_value, float) and warmup_value >= 1:
+        # 大于等于1的float，当作绝对值处理
+        num_warmup_steps = int(warmup_value)
+        warmup_type = "绝对步数"
+    else:
+        # 整数形式：绝对步数
+        num_warmup_steps = int(warmup_value)
+        warmup_type = "绝对步数"
+    
+    # 确保warmup步数不超过总训练步数
+    num_warmup_steps = min(num_warmup_steps, total_training_steps)
+    
+    return num_warmup_steps, warmup_type
+
 def create_lr_scheduler(optimizer, config, steps_per_epoch):
     """创建学习率调度器
     
@@ -22,12 +64,10 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     # 从配置中获取参数
     lr_config = config['training'].get('lr_scheduler', {})
     scheduler_type = lr_config.get('type', 'cosine')
-    num_warmup_steps = config['training']['warmup_steps']
+    warmup_steps_config = config['training']['warmup_steps']
     num_epochs = config['training']['num_epochs']
     
     # 类型检查和转换
-    if isinstance(num_warmup_steps, str):
-        num_warmup_steps = int(num_warmup_steps)
     if isinstance(num_epochs, str):
         num_epochs = int(num_epochs)
     
@@ -48,6 +88,9 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     effective_steps_per_epoch = steps_per_epoch // gradient_accumulation_steps
     num_training_steps = effective_steps_per_epoch * num_epochs
     
+    # 处理warmup_steps：支持绝对值和比例
+    num_warmup_steps, warmup_type = _calculate_warmup_steps(warmup_steps_config, num_training_steps)
+    
     # 只在主进程中打印训练配置信息
     try:
         import torch.distributed as dist
@@ -58,8 +101,10 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     if is_main_process:
         print(f"\n📈 学习率调度器配置:")
         print(f"  • 调度器类型: {scheduler_type}")
-        print(f"  • Warmup步数: {num_warmup_steps:,}")
+        print(f"  • Warmup配置: {warmup_steps_config} ({warmup_type})")
+        print(f"  • 实际Warmup步数: {num_warmup_steps:,}")
         print(f"  • 总训练步数: {num_training_steps:,}")
+        print(f"  • Warmup比例: {num_warmup_steps/num_training_steps:.1%}")
         print(f"  • 每GPU微批次大小: {micro_batch_size_per_gpu}")
         print(f"  • 梯度累积步数: {gradient_accumulation_steps}")
         print(f"  • 总有效批次大小: {train_batch_size}")

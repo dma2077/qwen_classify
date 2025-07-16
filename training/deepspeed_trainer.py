@@ -138,6 +138,62 @@ class DeepSpeedTrainer:
         else:
             return current_value < best_value
     
+    def _cleanup_old_best_models(self):
+        """清理所有检查点，只保留最新的最佳模型"""
+        if not self.save_best_only:
+            return
+            
+        try:
+            import glob
+            import shutil
+            
+            # 查找所有检查点目录
+            best_model_pattern = os.path.join(self.config['output_dir'], "best-model-step-*")
+            checkpoint_pattern = os.path.join(self.config['output_dir'], "checkpoint-*")
+            
+            best_model_dirs = glob.glob(best_model_pattern)
+            checkpoint_dirs = glob.glob(checkpoint_pattern)
+            
+            dirs_to_remove = []
+            
+            # 1. 删除所有常规检查点（checkpoint-*）
+            dirs_to_remove.extend(checkpoint_dirs)
+            
+            # 2. 删除除最新之外的所有最佳模型检查点
+            if len(best_model_dirs) > 1:
+                def extract_step(path):
+                    try:
+                        return int(os.path.basename(path).split('-')[-1])
+                    except:
+                        return 0
+                
+                best_model_dirs.sort(key=extract_step)
+                dirs_to_remove.extend(best_model_dirs[:-1])  # 保留最后一个（最新的）
+            
+            # 执行清理
+            total_removed = 0
+            for dir_path in dirs_to_remove:
+                if os.path.exists(dir_path):
+                    dir_name = os.path.basename(dir_path)
+                    self.dist_ctx.print_main(f"🗑️  删除检查点: {dir_name}")
+                    shutil.rmtree(dir_path)
+                    total_removed += 1
+            
+            # 显示清理结果
+            if total_removed > 0:
+                self.dist_ctx.print_main(f"✅ 清理完成，删除了 {total_removed} 个检查点")
+                
+                # 显示保留的最佳模型
+                remaining_best = glob.glob(best_model_pattern)
+                if remaining_best:
+                    remaining_best.sort(key=lambda x: int(os.path.basename(x).split('-')[-1]))
+                    self.dist_ctx.print_main(f"🏆 保留最佳模型: {os.path.basename(remaining_best[-1])}")
+            else:
+                self.dist_ctx.print_main("✅ 无需清理，目录已经很干净")
+                
+        except Exception as e:
+            self.dist_ctx.print_main(f"⚠️  清理检查点时出错: {e}")
+
     def _update_best_model(self, eval_results, step):
         """更新最佳模型"""
         if not self.best_model_enabled:
@@ -168,6 +224,10 @@ class DeepSpeedTrainer:
             
             # 保存最佳模型
             self.save_checkpoint(step, is_best=True)
+            
+            # 清理旧的最佳模型（如果启用了仅保存最佳模型）
+            if self.save_best_only:
+                self._cleanup_old_best_models()
             
             # 记录到wandb
             self.monitor.log_metrics({
@@ -254,9 +314,9 @@ class DeepSpeedTrainer:
             avg_loss = metrics['total_loss'] / metrics['step_count'] if metrics['step_count'] > 0 else 0
             accuracy = metrics['correct_samples'] / metrics['total_samples']
             
-            dataset_log_data[f"{prefix}_{dataset_name}_loss"] = avg_loss
-            dataset_log_data[f"{prefix}_{dataset_name}_accuracy"] = accuracy
-            dataset_log_data[f"{prefix}_{dataset_name}_samples"] = metrics['total_samples']
+            dataset_log_data[f"training/{prefix}_{dataset_name}_loss"] = avg_loss
+            dataset_log_data[f"training/{prefix}_{dataset_name}_accuracy"] = accuracy
+            dataset_log_data[f"training/{prefix}_{dataset_name}_samples"] = metrics['total_samples']
             
             # 累计整体指标
             overall_samples += metrics['total_samples']
@@ -271,9 +331,9 @@ class DeepSpeedTrainer:
         # 添加整体指标
         if overall_samples > 0:
             overall_accuracy = overall_correct / overall_samples
-            dataset_log_data[f"{prefix}_overall_accuracy"] = overall_accuracy
-            dataset_log_data[f"{prefix}_overall_samples"] = overall_samples
-            dataset_log_data[f"{prefix}_overall_correct"] = overall_correct
+            dataset_log_data[f"training/{prefix}_overall_accuracy"] = overall_accuracy
+            dataset_log_data[f"training/{prefix}_overall_samples"] = overall_samples
+            dataset_log_data[f"training/{prefix}_overall_correct"] = overall_correct
             
             if self.dist_ctx.is_main_process:
                 print(f"📊 {prefix.upper()} - OVERALL: "
@@ -346,16 +406,16 @@ class DeepSpeedTrainer:
         if self.dataset_configs and self.enable_dataset_metrics:
             eval_results = evaluate_multi_dataset(self.model, self.val_loader, self.dist_ctx.device, self.dataset_configs)
             
-            # 记录评估结果到wandb
+            # 记录评估结果到wandb - 放在training组中
             if eval_results and 'dataset_metrics' in eval_results:
                 eval_log_data = {}
                 overall_samples = 0
                 overall_correct = 0
                 
                 for dataset_name, metrics in eval_results['dataset_metrics'].items():
-                    eval_log_data[f"eval_{dataset_name}_loss"] = metrics['loss']
-                    eval_log_data[f"eval_{dataset_name}_accuracy"] = metrics['accuracy']
-                    eval_log_data[f"eval_{dataset_name}_samples"] = metrics['samples']
+                    eval_log_data[f"training/eval_{dataset_name}_loss"] = metrics['loss']
+                    eval_log_data[f"training/eval_{dataset_name}_accuracy"] = metrics['accuracy']
+                    eval_log_data[f"training/eval_{dataset_name}_samples"] = metrics['samples']
                     
                     overall_samples += metrics['samples']
                     overall_correct += metrics['correct']
@@ -363,9 +423,9 @@ class DeepSpeedTrainer:
                 # 添加整体指标
                 if overall_samples > 0:
                     overall_accuracy = overall_correct / overall_samples
-                    eval_log_data["eval_overall_accuracy"] = overall_accuracy
-                    eval_log_data["eval_overall_samples"] = overall_samples
-                    eval_log_data["eval_overall_correct"] = overall_correct
+                    eval_log_data["training/eval_overall_accuracy"] = overall_accuracy
+                    eval_log_data["training/eval_overall_samples"] = overall_samples
+                    eval_log_data["training/eval_overall_correct"] = overall_correct
                 
                 # 使用传入的步数或当前步数
                 current_step = step if step is not None else self.current_step
@@ -409,16 +469,16 @@ class DeepSpeedTrainer:
         if self.dataset_configs and self.enable_dataset_metrics:
             eval_results = evaluate_multi_dataset(self.model, full_eval_loader, self.dist_ctx.device, self.dataset_configs)
             
-            # 记录完整评估结果到wandb
+            # 记录完整评估结果到wandb - 放在training组中
             if eval_results and 'dataset_metrics' in eval_results:
                 eval_log_data = {}
                 overall_samples = 0
                 overall_correct = 0
                 
                 for dataset_name, metrics in eval_results['dataset_metrics'].items():
-                    eval_log_data[f"final_eval_{dataset_name}_loss"] = metrics['loss']
-                    eval_log_data[f"final_eval_{dataset_name}_accuracy"] = metrics['accuracy']
-                    eval_log_data[f"final_eval_{dataset_name}_samples"] = metrics['samples']
+                    eval_log_data[f"training/final_eval_{dataset_name}_loss"] = metrics['loss']
+                    eval_log_data[f"training/final_eval_{dataset_name}_accuracy"] = metrics['accuracy']
+                    eval_log_data[f"training/final_eval_{dataset_name}_samples"] = metrics['samples']
                     
                     overall_samples += metrics['samples']
                     overall_correct += metrics['correct']
@@ -426,11 +486,11 @@ class DeepSpeedTrainer:
                 # 添加整体指标
                 if overall_samples > 0:
                     overall_accuracy = overall_correct / overall_samples
-                    eval_log_data["final_eval_overall_accuracy"] = overall_accuracy
-                    eval_log_data["final_eval_overall_samples"] = overall_samples
-                    eval_log_data["final_eval_overall_correct"] = overall_correct
+                    eval_log_data["training/final_eval_overall_accuracy"] = overall_accuracy
+                    eval_log_data["training/final_eval_overall_samples"] = overall_samples
+                    eval_log_data["training/final_eval_overall_correct"] = overall_correct
                 
-                self.monitor.log_metrics(eval_log_data, self.current_step)
+                self.monitor.log_metrics(eval_log_data, self.best_model_step)
                 
                 self.dist_ctx.print_main(f"\n🎯 最佳模型完整评估结果:")
                 self.dist_ctx.print_main(f"   • 整体准确率: {overall_accuracy:.4f} ({overall_accuracy*100:.2f}%)")
@@ -439,11 +499,11 @@ class DeepSpeedTrainer:
         else:
             eval_loss, eval_accuracy = evaluate_model(self.model, full_eval_loader, self.dist_ctx.device)
             
-            # 记录完整评估结果
+            # 记录完整评估结果 - 放在training组中
             self.monitor.log_metrics({
-                "final_eval_loss": eval_loss,
-                "final_eval_accuracy": eval_accuracy
-            }, self.current_step)
+                "training/final_eval_loss": eval_loss,
+                "training/final_eval_accuracy": eval_accuracy
+            }, self.best_model_step)
             
             self.dist_ctx.print_main(f"\n🎯 最佳模型完整评估结果:")
             self.dist_ctx.print_main(f"   • 损失: {eval_loss:.4f}")
@@ -668,17 +728,19 @@ class DeepSpeedTrainer:
                         # 暂时刷新进度条以避免输出冲突
                         pbar.clear()
                         eval_loss, eval_accuracy = self.evaluate(step=effective_step)
-                        # 记录评估结果到wandb
-                        self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)
+                        # 注意：评估结果已经在evaluate方法中记录到wandb了，无需重复记录
                         self.model.train()
                         # 重新显示进度条
                         pbar.refresh()
                     
                     # 定期保存检查点（基于有效步数）
                     if effective_step > 0 and effective_step % save_steps == 0:
-                        pbar.clear()
-                        self.save_checkpoint(effective_step)
-                        pbar.refresh()
+                        if not self.save_best_only:  # 只有在未启用"仅保存最佳模型"时才保存常规检查点
+                            pbar.clear()
+                            self.save_checkpoint(effective_step)
+                            pbar.refresh()
+                        elif self.dist_ctx.is_main_process:  # 如果启用了仅保存最佳模型，只显示信息
+                            pbar.write(f"💡 仅保存最佳模型模式已启用，跳过步骤 {effective_step} 的常规检查点保存")
             
             # Epoch结束统计
             epoch_time = time.time() - epoch_start_time
@@ -700,12 +762,15 @@ class DeepSpeedTrainer:
         # 训练结束前进行最终评估
         if self.dist_ctx.is_main_process:
             print("\n🎯 训练即将完成，进行最终评估...")
-        eval_loss, eval_accuracy = self.evaluate()
+        eval_loss, eval_accuracy = self.evaluate(step=effective_step)
         
-        # 保存最终检查点
-        if self.dist_ctx.is_main_process:
-            print(f"💾 保存最终检查点...")
-        self.save_checkpoint(effective_step)
+        # 保存最终检查点（如果未启用仅保存最佳模型）
+        if not self.save_best_only:
+            if self.dist_ctx.is_main_process:
+                print(f"💾 保存最终检查点...")
+            self.save_checkpoint(effective_step)
+        elif self.dist_ctx.is_main_process:
+            print(f"💡 仅保存最佳模型模式已启用，跳过最终检查点保存")
         
         # 进行完整评估（在最佳模型上）
         if self.full_eval_at_end:
@@ -719,8 +784,17 @@ class DeepSpeedTrainer:
                 print(f"🏆 最佳模型路径: {self.best_model_path}")
         
         # 记录最终评估结果并结束wandb run
-        self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)
+        # 注意：如果是多数据集评估，结果已经在evaluate方法中记录了
+        # 只有单数据集情况下才需要这里记录
+        if not (self.dataset_configs and self.enable_dataset_metrics):
+            self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)
         self.monitor.save_logs()
+        
+        # 训练结束后进行最终清理
+        if self.save_best_only and self.dist_ctx.is_main_process:
+            self.dist_ctx.print_main("🧹 进行最终检查点清理...")
+            self._cleanup_old_best_models()
+        
         self.monitor.finish_training()
         
     def load_checkpoint(self, checkpoint_path):

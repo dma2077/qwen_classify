@@ -625,48 +625,59 @@ class TrainingMonitor:
         
         # 记录到wandb（仅主进程）
         if self.use_wandb and self._is_main_process():
-            # Training组 - 包含loss、grad_norm、lr
+            # 减少WandB日志频率以降低主进程开销
+            should_log_detailed = (step % 10 == 0)  # 每10步记录详细信息
+            
+            # 基础训练指标 - 每步都记录
             wandb.log({
                 "training/loss": float(loss),
-                "training/grad_norm": float(grad_norm),
                 "training/lr": float(learning_rate),
-                "training/epoch": float(epoch),
                 "global_step": int(step)
-            }, step=int(step))
+            }, step=int(step), commit=False)
             
-            # Perf组 - 包含MFU（使用实时数据）
-            if self.model_ref is not None and self.actual_flops is not None:
-                # 优先使用当前batch的实际序列长度
-                if attention_mask is not None:
-                    # 动态计算当前batch的实际序列长度
-                    current_seq_length = self._calculate_actual_seq_length(attention_mask)
-                elif self.actual_seq_length is not None:
-                    # 使用之前测量的序列长度
-                    current_seq_length = self.actual_seq_length
-                else:
-                    # 使用配置中的默认值
-                    current_seq_length = self.seq_length
-                
-                # 使用最新的FLOPs值计算MFU
-                current_flops = real_time_flops if real_time_flops is not None else self.actual_flops
-                mfu = calculate_mfu(self.model_ref, self.batch_size, current_seq_length, step_time, current_flops)
-                
-                perf_logs = {
-                    "perf/mfu": float(mfu),
-                    "perf/step_time": float(step_time),
-                    "perf/tokens_per_second": float(self.batch_size * current_seq_length / step_time),
-                    "perf/actual_flops": float(current_flops),
-                    "perf/actual_seq_length": float(current_seq_length)
+            # 详细指标 - 减少频率
+            if should_log_detailed:
+                detailed_logs = {
+                    "training/grad_norm": float(grad_norm),
+                    "training/epoch": float(epoch),
                 }
                 
-                # 如果有实时FLOPs，标记出来
-                if real_time_flops is not None:
-                    perf_logs["perf/real_time_measurement"] = 1.0
-                    perf_logs["perf/flops_per_second"] = float(current_flops / step_time)
-                else:
-                    perf_logs["perf/real_time_measurement"] = 0.0
+                # Perf组 - 包含MFU（使用实时数据）
+                if self.model_ref is not None and self.actual_flops is not None:
+                    # 优先使用当前batch的实际序列长度
+                    if attention_mask is not None:
+                        # 动态计算当前batch的实际序列长度
+                        current_seq_length = self._calculate_actual_seq_length(attention_mask)
+                    elif self.actual_seq_length is not None:
+                        # 使用之前测量的序列长度
+                        current_seq_length = self.actual_seq_length
+                    else:
+                        # 使用配置中的默认值
+                        current_seq_length = self.seq_length
+                    
+                    # 使用最新的FLOPs值计算MFU
+                    current_flops = real_time_flops if real_time_flops is not None else self.actual_flops
+                    mfu = calculate_mfu(self.model_ref, self.batch_size, current_seq_length, step_time, current_flops)
+                    
+                    detailed_logs.update({
+                        "perf/mfu": float(mfu),
+                        "perf/step_time": float(step_time),
+                        "perf/tokens_per_second": float(self.batch_size * current_seq_length / step_time),
+                        "perf/actual_flops": float(current_flops),
+                        "perf/actual_seq_length": float(current_seq_length)
+                    })
+                    
+                    # 如果有实时FLOPs，标记出来
+                    if real_time_flops is not None:
+                        detailed_logs["perf/real_time_measurement"] = 1.0
+                        detailed_logs["perf/flops_per_second"] = float(current_flops / step_time)
+                    else:
+                        detailed_logs["perf/real_time_measurement"] = 0.0
                 
-                wandb.log(perf_logs, step=int(step))
+                wandb.log(detailed_logs, step=int(step), commit=True)
+            else:
+                # 提交基础日志
+                wandb.log({}, step=int(step), commit=True)
             
             # System组 - GPU状态 (每10步记录一次) - 已禁用单GPU指标，避免冗余
             # 注释掉单个GPU指标，减少WandB中的冗余信息
