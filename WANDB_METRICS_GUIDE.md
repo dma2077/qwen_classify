@@ -40,7 +40,7 @@
 
 ### 3. Evaluation 组 (`eval/`)
 **记录频率**: 每 `eval_steps` 步（默认500步）
-**记录方法**: `monitor.log_metrics()` 通过 `evaluate()`
+**记录方法**: `monitor.log_metrics()` 通过 `evaluate()` 和 `_log_dataset_metrics(is_eval=True)`
 
 **整体指标**:
 - `eval/overall_loss` - 整体评估损失 ✅
@@ -62,6 +62,18 @@
 - `eval/final_overall_accuracy` - 最终整体准确率 ✅
 - `eval/final_{dataset_name}_loss` - 各数据集最终损失 ✅
 - `eval/final_{dataset_name}_accuracy` - 各数据集最终准确率 ✅
+
+### 4. Training 组 (`training/`) - 训练时数据集指标
+**记录频率**: 训练过程中每步累积，在 `_log_dataset_metrics(is_eval=False)` 时记录
+**记录方法**: `monitor.log_metrics()` 通过 `_log_dataset_metrics()`
+
+**训练时数据集指标**:
+- `training/{dataset_name}_loss` - 训练时各数据集损失 ✅
+- `training/{dataset_name}_accuracy` - 训练时各数据集准确率 ✅
+- `training/{dataset_name}_samples` - 训练时各数据集样本数 ✅
+- `training/overall_accuracy` - 训练时整体准确率 ✅
+- `training/overall_samples` - 训练时整体样本数 ✅
+- `training/overall_correct` - 训练时整体正确数 ✅
 
 ## 🔧 记录方法详解
 
@@ -106,12 +118,17 @@
 2. **空记录**: 存在 `wandb.log({}, commit=True)` 空调用
 3. **不一致的commit**: 不同方法使用不同的commit策略
 4. **数据丢失风险**: 基础指标可能未被正确提交
+5. **指标分组不一致**: 评估指标在不同方法中使用不同的分组（`training/eval_*` vs `eval/*`）
 
 ### 修复后的保证
 1. **所有wandb.log调用都使用 `commit=True`**
 2. **一次性记录**: 避免多次分离的log调用
 3. **统一的commit策略**: 所有记录方法保持一致
 4. **数据完整性**: 确保所有指标都被正确记录和提交
+5. **指标分组一致性**: 
+   - 评估指标统一使用 `eval/` 组
+   - 训练指标统一使用 `training/` 组
+   - 性能指标统一使用 `perf/` 组
 
 ## 📈 WandB界面预期结构
 
@@ -120,7 +137,8 @@
 ├── 📈 training/
 │   ├── loss, lr, grad_norm, epoch (每步)
 │   ├── epoch_avg_loss, epoch_time (每epoch)
-│   └── started, finished, total_time (状态)
+│   ├── started, finished, total_time (状态)
+│   └── {dataset}_loss, {dataset}_accuracy (训练时数据集指标)
 ├── ⚡ perf/
 │   ├── step_time, mfu (每10步)
 │   ├── tokens_per_second, actual_flops

@@ -309,12 +309,13 @@ class DeepSpeedTrainer:
         if not self.enable_dataset_metrics or not self.dataset_metrics:
             return
             
-        prefix = "eval" if is_eval else "train"
-        
         # 计算并输出各数据集的指标
         dataset_log_data = {}
         overall_samples = 0
         overall_correct = 0
+        
+        # 根据是否为评估模式选择指标组
+        metric_group = "eval" if is_eval else "training"
         
         for dataset_name, metrics in self.dataset_metrics.items():
             if metrics['total_samples'] == 0:
@@ -323,9 +324,9 @@ class DeepSpeedTrainer:
             avg_loss = metrics['total_loss'] / metrics['step_count'] if metrics['step_count'] > 0 else 0
             accuracy = metrics['correct_samples'] / metrics['total_samples']
             
-            dataset_log_data[f"training/{prefix}_{dataset_name}_loss"] = avg_loss
-            dataset_log_data[f"training/{prefix}_{dataset_name}_accuracy"] = accuracy
-            dataset_log_data[f"training/{prefix}_{dataset_name}_samples"] = metrics['total_samples']
+            dataset_log_data[f"{metric_group}/{dataset_name}_loss"] = avg_loss
+            dataset_log_data[f"{metric_group}/{dataset_name}_accuracy"] = accuracy
+            dataset_log_data[f"{metric_group}/{dataset_name}_samples"] = metrics['total_samples']
             
             # 累计整体指标
             overall_samples += metrics['total_samples']
@@ -333,19 +334,21 @@ class DeepSpeedTrainer:
             
             # 只在主进程输出详细信息
             if self.dist_ctx.is_main_process:
-                print(f"📊 {prefix.upper()} - {dataset_name}: "
+                prefix = "EVAL" if is_eval else "TRAIN"
+                print(f"📊 {prefix} - {dataset_name}: "
                       f"Loss={avg_loss:.4f}, Acc={accuracy:.4f} ({accuracy*100:.2f}%), "
                       f"Samples={metrics['total_samples']}")
         
         # 添加整体指标
         if overall_samples > 0:
             overall_accuracy = overall_correct / overall_samples
-            dataset_log_data[f"training/{prefix}_overall_accuracy"] = overall_accuracy
-            dataset_log_data[f"training/{prefix}_overall_samples"] = overall_samples
-            dataset_log_data[f"training/{prefix}_overall_correct"] = overall_correct
+            dataset_log_data[f"{metric_group}/overall_accuracy"] = overall_accuracy
+            dataset_log_data[f"{metric_group}/overall_samples"] = overall_samples
+            dataset_log_data[f"{metric_group}/overall_correct"] = overall_correct
             
             if self.dist_ctx.is_main_process:
-                print(f"📊 {prefix.upper()} - OVERALL: "
+                prefix = "EVAL" if is_eval else "TRAIN"
+                print(f"📊 {prefix} - OVERALL: "
                       f"Acc={overall_accuracy:.4f} ({overall_accuracy*100:.2f}%), "
                       f"Samples={overall_samples}")
         
