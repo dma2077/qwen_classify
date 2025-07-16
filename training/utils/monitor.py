@@ -514,6 +514,9 @@ class TrainingMonitor:
                     if hasattr(wandb.run, 'entity') and hasattr(wandb.run, 'project'):
                         project_url = f"https://wandb.ai/{wandb.run.entity}/{wandb.run.project}"
                         print(f"⭐ View project at: {project_url}")
+                    
+                    # 自动创建eval图表
+                    self._create_eval_charts()
             except Exception as display_error:
                 print(f"⚠️  wandb链接显示失败: {display_error}")
             
@@ -524,6 +527,47 @@ class TrainingMonitor:
     def set_model_ref(self, model):
         """设置模型引用，用于MFU计算"""
         self.model_ref = model
+    
+    def _create_eval_charts(self):
+        """自动创建eval图表，确保eval指标在wandb界面中显示"""
+        try:
+            if not self.use_wandb or not self._is_main_process():
+                return
+            
+            # 记录一些初始的eval指标，让wandb自动创建图表
+            initial_eval_metrics = {
+                "eval/overall_loss": 0.0,
+                "eval/overall_accuracy": 0.0,
+                "eval/overall_samples": 0,
+                "eval/overall_correct": 0
+            }
+            
+            # 添加数据集特定的指标（如果配置中有）
+            dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
+            for dataset_name in dataset_configs.keys():
+                initial_eval_metrics[f"eval/{dataset_name}_loss"] = 0.0
+                initial_eval_metrics[f"eval/{dataset_name}_accuracy"] = 0.0
+                initial_eval_metrics[f"eval/{dataset_name}_samples"] = 0
+            
+            # 记录初始指标，让wandb创建图表
+            wandb.log(initial_eval_metrics, step=0, commit=True)
+            
+            print("📊 已创建eval图表，eval指标将在wandb界面中显示")
+            
+        except Exception as e:
+            print(f"⚠️  创建eval图表失败: {e}")
+    
+    def _ensure_eval_charts_visible(self):
+        """确保eval图表在wandb界面中可见"""
+        try:
+            if not self.use_wandb or not self._is_main_process():
+                return
+            
+            # 记录一个特殊的标记，确保eval指标被wandb识别
+            wandb.log({"eval/chart_visibility_check": 1.0}, commit=True)
+            
+        except Exception as e:
+            print(f"⚠️  确保eval图表可见性失败: {e}")
     
     def profile_model_flops(self, batch_example: Dict):
         """测量模型的实际FLOPs"""
@@ -724,6 +768,11 @@ class TrainingMonitor:
     def log_evaluation(self, step: int, eval_loss: float, eval_accuracy: float, additional_metrics: dict = None):
         """记录评估结果 - 在eval组中显示指标"""
         if self.use_wandb and self._is_main_process():
+            # 确保eval图表已创建
+            if not hasattr(self, '_eval_charts_created'):
+                self._ensure_eval_charts_visible()
+                self._eval_charts_created = True
+            
             log_data = {
                 "eval/loss": float(eval_loss),
                 "eval/accuracy": float(eval_accuracy),
@@ -739,6 +788,8 @@ class TrainingMonitor:
                     log_data[key] = float(value) if isinstance(value, (int, float)) else value
             
             wandb.log(log_data, step=int(step), commit=True)
+            print(f"📊 评估指标已记录到wandb (step={step}): {list(log_data.keys())}")
+            print(f"🔗 请访问wandb界面查看eval图表: {wandb.run.url}")
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
         """通用的指标记录方法"""
@@ -768,16 +819,26 @@ class TrainingMonitor:
                 else:
                     log_data[key] = value
             
+            # 检查是否包含eval指标
+            has_eval_metrics = any('eval' in key for key in log_data.keys())
+            
+            # 如果是第一次记录eval指标，确保图表可见
+            if has_eval_metrics and not hasattr(self, '_eval_charts_created'):
+                self._ensure_eval_charts_visible()
+                self._eval_charts_created = True
+            
             # 记录到wandb
             if step is not None:
                 wandb.log(log_data, step=int(step), commit=commit)
                 # 只为eval指标显示成功信息
-                if any('eval' in key for key in log_data.keys()):
+                if has_eval_metrics:
                     print(f"📊 eval指标已记录到wandb (step={step}): {list(log_data.keys())}")
+                    print(f"🔗 请访问wandb界面查看eval图表: {wandb.run.url}")
             else:
                 wandb.log(log_data, commit=commit)
-                if any('eval' in key for key in log_data.keys()):
+                if has_eval_metrics:
                     print(f"📊 eval指标已记录到wandb: {list(log_data.keys())}")
+                    print(f"🔗 请访问wandb界面查看eval图表: {wandb.run.url}")
                 
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")
