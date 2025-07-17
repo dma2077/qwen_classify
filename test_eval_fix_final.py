@@ -25,15 +25,10 @@ def test_eval_fix():
     
     # 1. 定义指标关系（模拟monitor的设置）
     print("📋 定义指标关系...")
-    wandb.define_metric("effective_step")
-    wandb.define_metric("eval/*", step_metric="effective_step")
-    wandb.define_metric("training/*", step_metric="effective_step")
+    wandb.define_metric("step")
+    wandb.define_metric("*", step_metric="step")
     
-    # 定义具体指标
-    wandb.define_metric("eval/overall_loss", summary="min", step_metric="effective_step")
-    wandb.define_metric("eval/overall_accuracy", summary="max", step_metric="effective_step")
-    wandb.define_metric("eval/foodx251_loss", summary="min", step_metric="effective_step")
-    wandb.define_metric("eval/foodx251_accuracy", summary="max", step_metric="effective_step")
+    print("✅ 已定义统一x轴：所有指标使用'step'")
     
     print("✅ 指标关系已定义")
     
@@ -46,7 +41,7 @@ def test_eval_fix():
             "training/loss": 10.0 - step * 0.15 + random.uniform(-0.1, 0.1),
             "training/lr": 1e-5 * (0.995 ** step),
             "training/epoch": step / 25,
-            "effective_step": step
+            "step": step  # 🔥 使用统一的step字段
         }
         wandb.log(train_data, step=step, commit=True)
         
@@ -59,13 +54,13 @@ def test_eval_fix():
                 "eval/foodx251_accuracy": min(0.8, step * 0.014 + random.uniform(-0.015, 0.015)),
                 "eval/overall_samples": 1000,
                 "eval/overall_correct": int(1000 * min(0.85, step * 0.015)),
-                "effective_step": step  # 🔥 关键：确保eval指标也有effective_step
+                "step": step  # 🔥 关键：确保eval指标也有统一的step
             }
             
             print(f"📊 Step {step}: 记录eval指标")
             print(f"   eval/overall_loss: {eval_data['eval/overall_loss']:.4f}")
             print(f"   eval/overall_accuracy: {eval_data['eval/overall_accuracy']:.4f}")
-            print(f"   effective_step: {eval_data['effective_step']}")
+            print(f"   step: {eval_data['step']}")
             
             wandb.log(eval_data, step=step, commit=True)
         
@@ -82,7 +77,7 @@ def test_eval_fix():
     print("📊 预期结果:")
     print("   1. training组指标应该连续显示（每步）")
     print("   2. eval组指标应该在step 10, 20, 30, 40, 50显示")
-    print("   3. 两组指标应该在同一x轴上（effective_step）")
+    print("   3. 两组指标应该在同一x轴上（step）")
     print("   4. eval指标应该随步数改善（loss下降，accuracy上升）")
     
     # 保持连接确保数据同步
