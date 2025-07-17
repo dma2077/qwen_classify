@@ -25,6 +25,11 @@ training:
   use_fused_adam:  true  # Use FusedAdam for better performance
   # Note: micro_batch_size_per_gpu and gradient_accumulation_steps are now in ds_s2.json
 
+# 监控频率配置 - 高吞吐量模式（默认）
+monitor:
+  freq:
+    all_freq: 100  # 统一基础频率，适合生产训练
+
 # DeepSpeed specific settings
 deepspeed:
   config_file: "configs/ds_s2.json"

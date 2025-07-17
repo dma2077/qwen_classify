@@ -5,6 +5,8 @@ import torch
 import psutil
 from typing import Dict, List, Optional
 
+# 监控频率配置 - 统一使用all_freq设置
+
 # 添加wandb支持
 try:
     import wandb
@@ -418,6 +420,9 @@ class TrainingMonitor:
         self.step_start_time = None
         self.config = config or {}
         
+        # 初始化监控频率配置
+        self._init_monitor_frequencies()
+        
         # 创建日志目录
         os.makedirs(output_dir, exist_ok=True)
         
@@ -425,12 +430,92 @@ class TrainingMonitor:
         self.use_wandb = False
         self._init_wandb()
         
-        # MFU计算相关参数
+        # MFU计算相关参数 - 修复batch_size获取
         self.model_ref = None
         self.seq_length = config.get('model', {}).get('max_sequence_length', 512)
-        self.batch_size = config.get('train_batch_size', 32)
+        
+        # 正确获取batch_size - 优先从DeepSpeed配置获取
+        self.batch_size = self._get_effective_batch_size(config)
+        
         self.actual_flops = None  # 存储实际测量的FLOPs
         self.actual_seq_length = None  # 存储实际的序列长度（包含visual tokens）
+        
+        print(f"📊 TrainingMonitor初始化: batch_size={self.batch_size}")
+    
+    def _init_monitor_frequencies(self):
+        """初始化监控频率配置 - 仅支持all_freq统一设置"""
+        # 从config中获取monitor频率配置
+        monitor_config = self.config.get('monitor', {})
+        freq_config = monitor_config.get('freq', {})
+        
+        # 获取统一频率设置，如果没有则使用默认值100
+        all_freq = freq_config.get('all_freq', 100)
+        
+        # 基于all_freq计算所有频率，保持固定的比例关系
+        self.freq = {
+            'training_log_freq': all_freq,
+            'perf_log_freq': max(all_freq * 2, 1),      # 性能指标频率稍低
+            'gpu_log_freq': max(all_freq * 4, 1),       # GPU监控频率更低
+            'flops_profile_freq': max(all_freq * 2, 1), # FLOPs测量频率与perf保持一致
+            'local_save_freq': max(all_freq * 20, 1),   # 本地保存频率最低
+            'progress_update_freq': max(all_freq // 5, 1), # 进度更新更频繁
+            'eval_log_freq': 1,  # 评估时每步都记录
+        }
+        
+        # 打印监控频率配置
+        print(f"🔧 监控频率配置 (all_freq={all_freq}):")
+        for key, value in self.freq.items():
+            print(f"   {key}: 每{value}步")
+    
+    def _get_effective_batch_size(self, config: Dict) -> int:
+        """正确获取有效的batch size"""
+        try:
+            # 首先尝试从DeepSpeed配置获取
+            deepspeed_config = config.get('deepspeed', {})
+            if isinstance(deepspeed_config, str):
+                # 如果是文件路径，读取文件
+                import json
+                with open(deepspeed_config, 'r') as f:
+                    deepspeed_config = json.load(f)
+            
+            # 优先使用DeepSpeed的train_batch_size（这是真正的有效批次大小）
+            if 'train_batch_size' in deepspeed_config:
+                batch_size = deepspeed_config['train_batch_size']
+                print(f"📊 从DeepSpeed配置获取batch_size: {batch_size}")
+                return batch_size
+            
+            # 备选方案：从train_micro_batch_size_per_gpu计算
+            if 'train_micro_batch_size_per_gpu' in deepspeed_config:
+                micro_batch = deepspeed_config['train_micro_batch_size_per_gpu']
+                gradient_accumulation = deepspeed_config.get('gradient_accumulation_steps', 1)
+                
+                # 计算世界大小
+                try:
+                    import torch.distributed as dist
+                    if dist.is_available() and dist.is_initialized():
+                        world_size = dist.get_world_size()
+                    else:
+                        world_size = 1
+                except:
+                    world_size = 1
+                
+                effective_batch_size = micro_batch * gradient_accumulation * world_size
+                print(f"📊 计算得到batch_size: {micro_batch} x {gradient_accumulation} x {world_size} = {effective_batch_size}")
+                return effective_batch_size
+            
+            # 最后的备选方案：从根配置获取
+            if 'train_batch_size' in config:
+                batch_size = config['train_batch_size']
+                print(f"📊 从根配置获取batch_size: {batch_size}")
+                return batch_size
+            
+            # 默认值
+            print(f"📊 使用默认batch_size: 32")
+            return 32
+            
+        except Exception as e:
+            print(f"⚠️  获取batch_size失败: {e}，使用默认值32")
+            return 32
     
     def _is_main_process(self):
         """检查是否是主进程"""
@@ -700,7 +785,7 @@ class TrainingMonitor:
         print("✅ 训练监控已启动")
     
     def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None):
-        """记录训练步骤 - 最优化版本，大幅减少WandB记录频率"""
+        """记录训练步骤 - 修复WandB记录频率，确保perf和training组指标正常显示"""
         current_time = time.time()
         step_time = current_time - self.step_start_time
         
@@ -724,31 +809,32 @@ class TrainingMonitor:
         
         self.step_logs.append(log_entry)
         
-        # 大幅减少WandB记录频率以解决step顺序问题
+        # 🔥 修复WandB记录频率 - 确保training和perf组指标正常显示，使用动态频率
         if self.use_wandb and self._is_main_process():
-            # 仅每100步记录一次基础指标（大幅降频）
-            should_log_basic = (step % 100 == 0)
+            # 使用动态频率配置
+            should_log_training = (step % self.freq['training_log_freq'] == 0)
             
-            if should_log_basic:
-                # 基础指标记录
+            if should_log_training:
+                # 准备基础训练指标
                 wandb_data = {
                     "training/loss": float(loss),
-                    "training/lr": float(learning_rate),
+                    "training/lr": float(learning_rate), 
                     "training/epoch": float(epoch),
+                    "training/grad_norm": float(grad_norm),
                     "global_step": int(step)
                 }
                 
-                # 详细指标每200步记录一次（进一步降频）
-                should_log_detailed = (step % 200 == 0)
+                # 使用动态性能指标频率
+                should_log_perf = (step % self.freq['perf_log_freq'] == 0)
                 
-                if should_log_detailed:
-                    # 添加其他训练指标
+                if should_log_perf:
+                    # 添加性能指标到perf组
                     wandb_data.update({
-                        "training/grad_norm": float(grad_norm),
                         "perf/step_time": float(step_time),
+                        "perf/steps_per_second": float(1.0 / step_time) if step_time > 0 else 0.0,
                     })
                     
-                    # MFU和FLOP相关指标仅在有FLOPs数据时记录
+                    # MFU和FLOPs相关指标（如果可用）- 统一在perf组记录
                     if self.model_ref is not None and self.actual_flops is not None:
                         # 优先使用当前batch的实际序列长度
                         if attention_mask is not None:
@@ -762,27 +848,49 @@ class TrainingMonitor:
                         current_flops = real_time_flops if real_time_flops is not None else self.actual_flops
                         mfu = calculate_mfu(self.model_ref, self.batch_size, current_seq_length, step_time, current_flops)
                         
+                        # 添加性能相关指标到perf组
                         wandb_data.update({
                             "perf/mfu": float(mfu),
+                            "perf/mfu_percent": float(mfu * 100),
                             "perf/tokens_per_second": float(self.batch_size * current_seq_length / step_time),
+                            "perf/samples_per_second": float(self.batch_size / step_time),
                             "perf/actual_flops": float(current_flops),
-                            "perf/actual_seq_length": float(current_seq_length)
+                            "perf/actual_seq_length": float(current_seq_length),
+                            "perf/flops_per_second": float(current_flops / step_time),
                         })
                         
-                        # 如果有实时FLOPs，标记出来
+                        # 如果有实时FLOPs测量，添加标记
                         if real_time_flops is not None:
                             wandb_data["perf/real_time_measurement"] = 1.0
-                            wandb_data["perf/flops_per_second"] = float(current_flops / step_time)
                         else:
                             wandb_data["perf/real_time_measurement"] = 0.0
                 
-                # 一次性记录所有指标，确保commit
+                # 使用动态GPU监控频率
+                should_log_gpu = (step % self.freq['gpu_log_freq'] == 0)
+                if should_log_gpu:
+                    try:
+                        if torch.cuda.is_available():
+                            # 获取GPU内存使用情况
+                            memory_allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
+                            memory_reserved = torch.cuda.memory_reserved() / (1024**3)    # GB
+                            memory_total = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+                            memory_utilization = (memory_allocated / memory_total) * 100
+                            
+                            wandb_data.update({
+                                "perf/gpu_memory_allocated_gb": float(memory_allocated),
+                                "perf/gpu_memory_reserved_gb": float(memory_reserved),
+                                "perf/gpu_memory_utilization_percent": float(memory_utilization),
+                            })
+                    except Exception as e:
+                        pass  # 忽略GPU监控错误
+                
+                # 一次性记录所有指标
                 wandb.log(wandb_data, step=int(step), commit=True)
         
         self.step_start_time = current_time
         
-        # 降低本地日志保存频率：每500步保存一次（进一步降频）
-        if step % 500 == 0:
+        # 使用动态本地日志保存频率
+        if step % self.freq['local_save_freq'] == 0:
             self.save_logs()
     
     def log_epoch(self, epoch: int, avg_loss: float, elapsed_time: float, current_step: int = None):
