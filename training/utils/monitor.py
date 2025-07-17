@@ -941,6 +941,7 @@ class TrainingMonitor:
                             mfu = 0.0
                         
                         # 添加性能相关指标到perf组
+                        current_flops = self.actual_flops if self.actual_flops is not None else 0.0
                         wandb_data.update({
                             "perf/mfu": float(mfu),
                             "perf/mfu_percent": float(mfu * 100),
@@ -948,7 +949,7 @@ class TrainingMonitor:
                             "perf/samples_per_second": float(self.batch_size / step_time),
                             "perf/actual_flops": float(current_flops),
                             "perf/actual_seq_length": float(current_seq_length),
-                            "perf/flops_per_second": float(current_flops / step_time),
+                            "perf/flops_per_second": float(current_flops / step_time) if step_time > 0 else 0.0,
                         })
                         
                         # 如果有实时FLOPs测量，添加标记

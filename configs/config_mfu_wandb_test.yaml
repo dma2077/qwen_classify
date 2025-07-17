@@ -1,0 +1,216 @@
+# MFU和FLOPs在WandB中显示的测试配置
+
+# 基础训练配置
+training:
+  num_epochs: 2  # 短训练用于测试
+  logging_steps: 1  # 每步都记录
+  save_steps: 50
+  eval_steps: 10  # 频繁评估
+  
+  # 评估配置
+  evaluation:
+    partial_eval_during_training: true
+    full_eval_at_end: true
+    eval_best_model_only: true
+  
+  # 最佳模型追踪
+  best_model_tracking:
+    enabled: true
+    metric: "overall_accuracy"
+    mode: "max"
+    save_best_only: true
+
+# 🔥 关键配置：监控频率设置 - 确保MFU和FLOPs指标能显示
+monitor:
+  freq:
+    training_log_freq: 1        # 每步记录训练指标
+    eval_log_freq: 1            # 每步记录评估指标
+    perf_log_freq: 1            # 每步记录性能指标
+    gpu_log_freq: 1             # 每步记录GPU指标
+    flops_profile_freq: 5       # 每5步计算MFU (不要太频繁)
+    local_save_freq: 20         # 每20步保存本地日志
+    progress_update_freq: 1     # 每步更新进度
+
+# 数据集配置
+datasets:
+  dataset_configs:
+    food101:
+      name: "food101"
+      num_classes: 101
+      eval_split: "validation"
+
+# DeepSpeed配置
+deepspeed:
+  train_micro_batch_size_per_gpu: 4
+  gradient_accumulation_steps: 4
+  train_batch_size: 64
+  steps_per_print: 1  # 每步都打印
+  
+  # 优化器配置
+  optimizer:
+    type: "AdamW"
+    params:
+      lr: 1e-5
+      weight_decay: 0.01
+      eps: 1e-8
+  
+  # 学习率调度器
+  scheduler:
+    type: "WarmupLR"
+    params:
+      warmup_min_lr: 0
+      warmup_max_lr: 1e-5
+      warmup_num_steps: 50
+  
+  # ZeRO优化
+  zero_optimization:
+    stage: 2
+    offload_optimizer:
+      device: "cpu"
+      pin_memory: true
+    offload_param:
+      device: "cpu"
+      pin_memory: true
+    overlap_comm: true
+    contiguous_gradients: true
+    reduce_bucket_size: 5e8
+    stage3_prefetch_bucket_size: 5e8
+    stage3_param_persistence_threshold: 5e6
+    sub_group_size: 1e9
+    stage3_max_live_parameters: 1e9
+    stage3_max_reuse_distance: 1e9
+    stage3_gather_16bit_weights_on_model_save: true
+
+# 模型配置
+model:
+  name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  revision: "main"
+  torch_dtype: "bfloat16"
+  device_map: "auto"
+  trust_remote_code: true
+  max_sequence_length: 512
+
+# 数据加载器配置
+data:
+  train_batch_size: 64
+  eval_batch_size: 64
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+
+# 输出配置
+output_dir: "./outputs/mfu_wandb_test"
+save_deepspeed_format: true
+save_hf_format: true
+
+# 🔥 关键配置：WandB配置 - 确保MFU和FLOPs指标正确显示
+wandb:
+  enabled: true
+  project: "qwen-classify-mfu-wandb-test"
+  name: "mfu-flops-wandb-display-test"
+  log_dataset_metrics: true
+  
+  # 指标配置 - 明确指定要记录的指标
+  metrics:
+    # 训练指标
+    training:
+      - "training/loss"
+      - "training/learning_rate"
+      - "training/grad_norm"
+      - "training/epoch"
+    
+    # 评估指标
+    evaluation:
+      - "eval/overall_loss"
+      - "eval/overall_accuracy"
+      - "eval/food101_accuracy"
+    
+    # 🔥 关键：性能指标 - 确保MFU和FLOPs指标被记录
+    performance:
+      - "perf/mfu"
+      - "perf/mfu_percent"
+      - "perf/step_time"
+      - "perf/steps_per_second"
+      - "perf/tokens_per_second"
+      - "perf/samples_per_second"
+      - "perf/actual_flops"
+      - "perf/flops_per_second"
+      - "perf/actual_seq_length"
+      - "perf/gpu_memory_allocated_gb"
+      - "perf/gpu_memory_utilization_percent"
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# 使用说明
+usage_notes: |
+  # MFU和FLOPs在WandB中显示的测试配置
+  
+  ## 核心特性
+  - 每步都记录所有指标，确保能看到MFU和FLOPs
+  - 每5步使用profiler计算一次MFU
+  - 明确指定WandB要记录的指标
+  
+  ## 关键配置说明
+  
+  ### 监控频率
+  - training_log_freq: 1 - 每步记录训练指标
+  - perf_log_freq: 1 - 每步记录性能指标
+  - flops_profile_freq: 5 - 每5步计算MFU
+  
+  ### WandB指标
+  - perf/mfu: Model FLOPs Utilization (0-1)
+  - perf/mfu_percent: MFU百分比 (0-100%)
+  - perf/actual_flops: 实际FLOPs数量
+  - perf/flops_per_second: 每秒FLOPs
+  - perf/tokens_per_second: 每秒处理的token数
+  - perf/samples_per_second: 每秒处理的样本数
+  
+  ## 在WandB中查找指标
+  
+  ### 1. 性能指标组 (perf/)
+  在WandB界面中查找以下指标：
+  - perf/mfu
+  - perf/mfu_percent
+  - perf/actual_flops
+  - perf/flops_per_second
+  - perf/tokens_per_second
+  - perf/samples_per_second
+  
+  ### 2. 训练指标组 (training/)
+  - training/loss
+  - training/learning_rate
+  - training/grad_norm
+  
+  ### 3. 评估指标组 (eval/)
+  - eval/overall_loss
+  - eval/overall_accuracy
+  
+  ## 调试建议
+  
+  ### 如果指标不显示：
+  1. 检查WandB运行日志，确认指标是否成功发送
+  2. 验证指标名称是否正确 (perf/mfu, perf/actual_flops)
+  3. 确认指标值是否为数值类型
+  4. 检查WandB界面中的分组设置
+  
+  ### 如果MFU值为0：
+  1. 检查flops_profile_freq设置
+  2. 确认actual_flops是否正确设置
+  3. 验证模型引用是否正确
+  4. 检查profiler是否正常工作
+  
+  ### 如果指标分组不正确：
+  1. 确保指标名称包含分组前缀 (perf/, training/, eval/)
+  2. 检查WandB界面中的分组设置
+  3. 重新启动WandB运行
+  
+  ## 预期结果
+  
+  运行此配置后，你应该能在WandB界面中看到：
+  - 每步都有训练指标记录
+  - 每5步有MFU值（其他步骤MFU为0）
+  - 每步都有FLOPs相关指标
+  - 指标按分组正确显示 
