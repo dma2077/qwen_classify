@@ -2,8 +2,6 @@ import os
 import torch
 import torch.distributed as dist
 import time
-import signal
-from contextlib import contextmanager
 
 class DistributedContext:
     """管理分布式训练的上下文"""
@@ -39,40 +37,14 @@ class DistributedContext:
         if self.is_main_process:
             print(message)
 
-class TimeoutError(Exception):
-    """自定义超时异常"""
-    pass
-
-@contextmanager
-def timeout_handler(timeout_seconds=300):
+def safe_all_reduce(tensor, op=dist.ReduceOp.SUM, timeout=None):
     """
-    上下文管理器，用于处理操作超时
-    
-    Args:
-        timeout_seconds: 超时秒数，默认5分钟
-    """
-    def timeout_signal_handler(signum, frame):
-        raise TimeoutError(f"操作超时 ({timeout_seconds}秒)")
-    
-    # 设置信号处理器
-    old_handler = signal.signal(signal.SIGALRM, timeout_signal_handler)
-    signal.alarm(timeout_seconds)
-    
-    try:
-        yield
-    finally:
-        # 恢复原来的信号处理器
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
-
-def safe_all_reduce(tensor, op=dist.ReduceOp.SUM, timeout=180):
-    """
-    安全的all_reduce操作，带有超时保护
+    安全的all_reduce操作，简化版本，专注性能
     
     Args:
         tensor: 要聚合的tensor
         op: 聚合操作类型
-        timeout: 超时秒数，默认3分钟
+        timeout: 保留参数但不使用，避免性能开销
         
     Returns:
         bool: 是否成功执行
@@ -81,22 +53,19 @@ def safe_all_reduce(tensor, op=dist.ReduceOp.SUM, timeout=180):
         return True  # 非分布式环境，直接返回成功
     
     try:
-        with timeout_handler(timeout):
-            dist.all_reduce(tensor, op=op)
+        # 直接调用all_reduce，让NCCL自身处理超时
+        dist.all_reduce(tensor, op=op)
         return True
-    except TimeoutError as e:
-        print(f"❌ all_reduce操作超时: {e}")
-        return False
     except Exception as e:
         print(f"❌ all_reduce操作失败: {e}")
         return False
 
-def safe_barrier(timeout=120):
+def safe_barrier(timeout=None):
     """
-    安全的barrier操作，带有超时保护
+    安全的barrier操作，简化版本
     
     Args:
-        timeout: 超时秒数，默认2分钟
+        timeout: 保留参数但不使用
         
     Returns:
         bool: 是否成功执行
@@ -105,14 +74,36 @@ def safe_barrier(timeout=120):
         return True  # 非分布式环境，直接返回成功
     
     try:
-        with timeout_handler(timeout):
-            dist.barrier()
+        dist.barrier()
         return True
-    except TimeoutError as e:
-        print(f"❌ barrier操作超时: {e}")
-        return False
     except Exception as e:
         print(f"❌ barrier操作失败: {e}")
+        return False
+
+def batch_all_reduce(tensors, op=dist.ReduceOp.SUM):
+    """
+    批量all_reduce操作，减少通信次数
+    
+    Args:
+        tensors: tensor列表
+        op: 聚合操作类型
+        
+    Returns:
+        bool: 是否全部成功执行
+    """
+    if not (dist.is_available() and dist.is_initialized()):
+        return True  # 非分布式环境，直接返回成功
+    
+    if not tensors:
+        return True
+    
+    try:
+        # 批量处理所有tensor
+        for tensor in tensors:
+            dist.all_reduce(tensor, op=op)
+        return True
+    except Exception as e:
+        print(f"❌ 批量all_reduce操作失败: {e}")
         return False
 
 def get_nccl_debug_info():
@@ -132,18 +123,17 @@ def get_nccl_debug_info():
     return info
 
 def setup_nccl_timeout_env():
-    """设置NCCL超时环境变量"""
-    # 设置较短的超时时间，避免长时间挂起
-    os.environ['NCCL_TIMEOUT'] = '300'  # 5分钟超时
-    os.environ['NCCL_ASYNC_ERROR_HANDLING'] = '1'  # 启用异步错误处理
+    """设置轻量级的NCCL超时环境变量，专注性能"""
+    # 只设置必要的超时保护，避免过度配置影响性能
+    if 'NCCL_TIMEOUT' not in os.environ:
+        os.environ['NCCL_TIMEOUT'] = '600'  # 10分钟超时，比较宽松
     
-    # 在某些环境下禁用P2P通信，提高稳定性
-    if 'NCCL_P2P_DISABLE' not in os.environ:
-        os.environ['NCCL_P2P_DISABLE'] = '1'
+    # 启用异步错误处理，但不强制禁用性能优化
+    if 'NCCL_ASYNC_ERROR_HANDLING' not in os.environ:
+        os.environ['NCCL_ASYNC_ERROR_HANDLING'] = '1'
     
-    # 强制使用树形算法，减少通信复杂度
-    if 'NCCL_TREE_THRESHOLD' not in os.environ:
-        os.environ['NCCL_TREE_THRESHOLD'] = '0'
+    print("✅ 已设置轻量级NCCL超时保护")
     
-    print("✅ 已设置NCCL超时保护环境变量")
-    get_nccl_debug_info() 
+    # 只在调试模式下显示详细信息
+    if os.environ.get('NCCL_DEBUG', '').upper() in ['INFO', 'WARN']:
+        get_nccl_debug_info() 

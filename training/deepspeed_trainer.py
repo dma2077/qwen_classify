@@ -280,35 +280,47 @@ class DeepSpeedTrainer:
             return loss.item()
     
     def _update_dataset_metrics(self, batch, outputs, aggregated_loss):
-        """更新各数据集的指标"""
+        """更新各数据集的指标 - 优化版本，减少计算开销"""
         if not self.enable_dataset_metrics:
             return
             
         dataset_names = batch.get("dataset_names", [])
         labels = batch.get("labels")
-        logits = outputs.logits
         
-        if not dataset_names or labels is None or logits is None:
+        if not dataset_names or labels is None or outputs.logits is None:
+            return
+        
+        # 只在必要时计算预测结果（避免每次都计算）
+        predictions = None
+        
+        # 按数据集统计指标 - 简化循环和计算
+        dataset_count = len(dataset_names)
+        if dataset_count == 0:
             return
             
-        # 计算预测结果
-        predictions = torch.argmax(logits, dim=-1)
+        # 批量更新基础指标，避免逐个更新
+        avg_loss_per_sample = aggregated_loss / dataset_count
         
-        # 按数据集统计指标
         for i, dataset_name in enumerate(dataset_names):
-            if i >= len(labels) or i >= len(predictions):
+            if i >= len(labels):
+                continue
+            
+            # 延迟计算预测结果，只在需要时计算
+            if predictions is None:
+                predictions = torch.argmax(outputs.logits, dim=-1)
+            
+            if i >= len(predictions):
                 continue
                 
-            label = labels[i].item()
-            pred = predictions[i].item()
+            # 简化指标更新，减少重复计算
+            metrics = self.dataset_metrics[dataset_name]
+            metrics['total_loss'] += avg_loss_per_sample
+            metrics['total_samples'] += 1
+            metrics['step_count'] += 1
             
-            # 更新数据集指标
-            self.dataset_metrics[dataset_name]['total_loss'] += aggregated_loss / len(dataset_names)
-            self.dataset_metrics[dataset_name]['total_samples'] += 1
-            self.dataset_metrics[dataset_name]['step_count'] += 1
-            
-            if pred == label:
-                self.dataset_metrics[dataset_name]['correct_samples'] += 1
+            # 只在需要时进行tensor转换
+            if predictions[i].item() == labels[i].item():
+                metrics['correct_samples'] += 1
     
     def _log_dataset_metrics(self, step, is_eval=False):
         """记录各数据集的指标"""
@@ -680,15 +692,15 @@ class DeepSpeedTrainer:
                 if "num_classes_list" in batch:
                     forward_kwargs["num_classes_list"] = batch["num_classes_list"]
                 
-                # 决定是否进行实时FLOPs测量
+                # 决定是否进行实时FLOPs测量 - 大幅减少频率以避免性能开销
                 should_measure_flops = (
-                    not flops_profiled or  # 第一次测量
-                    (effective_step > 0 and effective_step % 50 == 0)  # 每50个有效步骤重新测量
+                    not flops_profiled or  # 仅第一次测量
+                    (effective_step > 0 and effective_step % 500 == 0)  # 每500个有效步骤重新测量（而不是50步）
                 )
                 
                 # 实时FLOPs测量和模型前向+反向传播
                 if should_measure_flops and self.dist_ctx.is_main_process:
-                    # 在主进程中进行实时FLOPs测量
+                    # 在主进程中进行实时FLOPs测量（仅限必要时）
                     outputs, loss, real_time_flops = self._forward_backward_with_profiling(forward_kwargs)
                     
                     # 更新FLOPs信息
@@ -696,39 +708,39 @@ class DeepSpeedTrainer:
                         self.monitor.set_actual_flops(real_time_flops, attention_mask.size(1))
                         if not flops_profiled:
                             print(f"✅ 实时测量FLOPs: {real_time_flops:.2e}")
+                        flops_profiled = True
                 else:
-                    # 正常的前向+反向传播（无profiling开销）
+                    # 正常的前向+反向传播（无profiling开销） - 大多数步骤使用这个路径
                     outputs = self.model(**forward_kwargs)
                     loss = outputs.loss
                     self.model.backward(loss)
-                    real_time_flops = self.monitor.actual_flops  # 使用已有的FLOPs值
+                    real_time_flops = None
                 
-                # 注意：无论是否进行profiling，loss都需要在后续进行聚合
-                
-                # 同步FLOPs信息到所有进程
-                if should_measure_flops and self.dist_ctx.world_size > 1:
+                # 简化分布式FLOPs同步 - 仅在首次测量时同步，避免每次都广播
+                if should_measure_flops and real_time_flops is not None and self.dist_ctx.world_size > 1 and not flops_profiled:
                     import torch.distributed as dist
                     
-                    # 广播实时FLOPs
-                    current_flops = real_time_flops if self.dist_ctx.is_main_process else 0.0
-                    flops_tensor = torch.tensor(current_flops, dtype=torch.float32, device=self.dist_ctx.device)
-                    dist.broadcast(flops_tensor, src=0)
+                    # 仅在首次成功测量FLOPs时进行一次同步
+                    flops_tensor = torch.tensor(real_time_flops, dtype=torch.float32, device=self.dist_ctx.device)
+                    seq_tensor = torch.tensor(attention_mask.size(1), dtype=torch.float32, device=self.dist_ctx.device)
                     
-                    # 广播序列长度
-                    current_seq_len = attention_mask.size(1) if self.dist_ctx.is_main_process else 0
-                    seq_tensor = torch.tensor(current_seq_len, dtype=torch.float32, device=self.dist_ctx.device)
-                    dist.broadcast(seq_tensor, src=0)
-                    
-                    # 所有进程更新FLOPs信息
-                    self.monitor.set_actual_flops(flops_tensor.item(), int(seq_tensor.item()))
+                    try:
+                        dist.broadcast(flops_tensor, src=0)
+                        dist.broadcast(seq_tensor, src=0)
+                        
+                        # 所有进程更新FLOPs信息
+                        if not self.dist_ctx.is_main_process:
+                            self.monitor.set_actual_flops(flops_tensor.item(), int(seq_tensor.item()))
+                    except Exception as e:
+                        print(f"⚠️  FLOPs同步失败: {e}")
                 
                 # 聚合多卡loss（在分布式训练中）
                 aggregated_loss = self._aggregate_loss(loss)
                 epoch_loss += aggregated_loss
-                flops_profiled = True
                 
-                # 更新数据集指标
-                self._update_dataset_metrics(batch, outputs, aggregated_loss)
+                # 优化数据集指标更新 - 降低频率以减少开销
+                if self.enable_dataset_metrics and (self.current_step % 10 == 0):  # 每10步更新一次而不是每步
+                    self._update_dataset_metrics(batch, outputs, aggregated_loss)
                 
                 # 获取梯度范数
                 grad_norm = self.model.get_global_grad_norm()
@@ -753,16 +765,17 @@ class DeepSpeedTrainer:
                 if is_effective_step:
                     effective_step += 1
                     
-                    # 更新进度条
-                    pbar.update(1)
-                    pbar.set_postfix({
-                        'loss': f'{aggregated_loss:.4f}',
-                        'lr': f'{current_lr:.2e}',
-                        'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
-                    })
+                    # 降低进度条更新频率以减少开销（每10个有效步骤更新一次）
+                    if effective_step % 10 == 0:
+                        pbar.update(10)  # 一次更新10步
+                        pbar.set_postfix({
+                            'loss': f'{aggregated_loss:.4f}',
+                            'lr': f'{current_lr:.2e}',
+                            'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
+                        })
                     
-                    # 记录训练指标（基于有效步数）
-                    step_real_time_flops = real_time_flops if should_measure_flops else None
+                    # 优化监控记录 - 仅在必要时传递real_time_flops
+                    step_real_time_flops = real_time_flops if should_measure_flops and real_time_flops is not None else None
                     self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, step_real_time_flops)
                 
                     # 详细日志记录（基于有效步数判断输出频率）

@@ -713,7 +713,7 @@ class TrainingMonitor:
             wandb.log({"training/started": True, "training/start_time": self.start_time}, commit=True)
     
     def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None):
-        """记录训练步骤"""
+        """记录训练步骤 - 优化版本，减少WandB记录开销"""
         current_time = time.time()
         step_time = current_time - self.step_start_time
         
@@ -737,27 +737,27 @@ class TrainingMonitor:
         
         self.step_logs.append(log_entry)
         
-        # 记录到wandb（仅主进程）
+        # 大幅优化WandB记录频率以提升性能
         if self.use_wandb and self._is_main_process():
-            # 准备所有指标
+            # 基础指标每步记录（轻量级）
             wandb_data = {
                 "training/loss": float(loss),
                 "training/lr": float(learning_rate),
-                "training/grad_norm": float(grad_norm),
                 "training/epoch": float(epoch),
                 "global_step": int(step)
             }
             
-            # 减少详细指标记录频率以降低开销
-            should_log_detailed = (step % 10 == 0)
+            # 详细指标大幅降低频率：每50步记录一次（而不是10步）
+            should_log_detailed = (step % 50 == 0)
             
             if should_log_detailed:
-                # 添加性能指标
+                # 添加其他训练指标
                 wandb_data.update({
+                    "training/grad_norm": float(grad_norm),
                     "perf/step_time": float(step_time),
                 })
                 
-                # MFU和FLOP相关指标
+                # MFU和FLOP相关指标仅在有FLOPs数据时记录
                 if self.model_ref is not None and self.actual_flops is not None:
                     # 优先使用当前batch的实际序列长度
                     if attention_mask is not None:
@@ -790,8 +790,8 @@ class TrainingMonitor:
         
         self.step_start_time = current_time
         
-        # 定期保存本地日志
-        if step % 100 == 0:
+        # 降低本地日志保存频率：每200步保存一次（而不是100步）
+        if step % 200 == 0:
             self.save_logs()
     
     def log_epoch(self, epoch: int, avg_loss: float, elapsed_time: float, current_step: int = None):
