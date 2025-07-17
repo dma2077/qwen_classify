@@ -109,30 +109,32 @@ def get_gpu_peak_flops():
         _GPU_PEAK_FLOPS_CACHE = 312e12  # 默认值
         return _GPU_PEAK_FLOPS_CACHE
 
-def calculate_mfu(model, batch_size: int, seq_length: int, step_time: float, actual_flops: float = None) -> float:
-    """计算MFU (Model FLOPs Utilization)
+def calculate_mfu_with_profiler(model, batch_size: int, seq_length: int, step_time: float) -> float:
+    """使用PyTorch Profiler计算MFU (Model FLOPs Utilization)
     
     MFU = 实际FLOPs/s / GPU峰值FLOPs/s
     
     参数:
         model: 模型实例
         batch_size: 批次大小
-        seq_length: 实际序列长度（包含visual tokens + text tokens）
+        seq_length: 实际序列长度
         step_time: 步骤耗时（秒）
-        actual_flops: 实际测量的FLOPs（包含前向+反向传播）
     
     返回:
         mfu: Model FLOPs Utilization (0-1之间的值)
     """
     try:
-        if actual_flops is None:
-            # 如果没有提供实际FLOPs，返回0
+        # 使用profiler测量FLOPs
+        actual_flops = _measure_flops_with_profiler(model, batch_size, seq_length)
+        
+        if actual_flops <= 0:
+            print("⚠️  Profiler无法测量FLOPs，返回0")
             return 0.0
         
         # 计算实际FLOPs/s
         actual_flops_per_second = actual_flops / step_time
         
-        # 动态获取GPU峰值性能
+        # 获取GPU峰值性能
         peak_flops_per_second = get_gpu_peak_flops()
         
         # 计算MFU
@@ -140,8 +142,57 @@ def calculate_mfu(model, batch_size: int, seq_length: int, step_time: float, act
         return min(mfu, 1.0)  # 限制在100%以内
         
     except Exception as e:
-        print(f"MFU计算错误: {e}")
+        print(f"Profiler MFU计算错误: {e}")
         return 0.0
+
+def _measure_flops_with_profiler(model, batch_size: int, seq_length: int) -> float:
+    """使用PyTorch Profiler测量FLOPs"""
+    try:
+        # 创建模拟的batch用于profiling
+        device = next(model.parameters()).device
+        dummy_batch = _create_dummy_batch_for_profiling(batch_size, seq_length, device)
+        
+        model.eval()
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CUDA],
+            record_shapes=True,
+            with_flops=True,
+            profile_memory=False
+        ) as prof:
+            with torch.no_grad():
+                _ = model(**dummy_batch)
+        
+        # 收集FLOPs统计
+        total_flops = 0
+        for event in prof.events():
+            if hasattr(event, 'flops') and event.flops > 0:
+                total_flops += event.flops
+        
+        return float(total_flops)
+        
+    except Exception as e:
+        print(f"Profiler FLOPs测量错误: {e}")
+        return 0.0
+
+def _create_dummy_batch_for_profiling(batch_size: int, seq_length: int, device: torch.device) -> Dict:
+    """创建用于profiling的虚拟batch"""
+    try:
+        # 创建虚拟的输入数据
+        input_ids = torch.randint(0, 1000, (batch_size, seq_length), device=device)
+        attention_mask = torch.ones(batch_size, seq_length, device=device)
+        pixel_values = torch.randn(batch_size, 3, 224, 224, device=device)  # 假设图像尺寸
+        labels = torch.randint(0, 10, (batch_size,), device=device)
+        
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
+            "labels": labels
+        }
+        
+    except Exception as e:
+        print(f"创建虚拟batch错误: {e}")
+        return {}
 
 def profile_model_flops(model, batch_example: Dict) -> float:
     """使用PyTorch profiler获取模型实际FLOPs（包括前向+反向传播）"""
@@ -411,7 +462,7 @@ def get_gpu_stats():
 class TrainingMonitor:
     """训练监控器（支持wandb）"""
     
-    def __init__(self, output_dir: str, config: Dict = None, log_file: str = "training_log.json"):
+    def __init__(self, output_dir: str, config: Dict = None, log_file: str = "training_log.json", flops_profile_freq: int = 500):
         self.output_dir = output_dir
         self.log_file = os.path.join(output_dir, log_file)
         self.step_logs = []
@@ -419,6 +470,9 @@ class TrainingMonitor:
         self.start_time = None
         self.step_start_time = None
         self.config = config or {}
+        
+        # FLOPs profiling频率配置
+        self.flops_profile_freq = flops_profile_freq
         
         # 初始化监控频率配置
         self._init_monitor_frequencies()
@@ -430,7 +484,7 @@ class TrainingMonitor:
         self.use_wandb = False
         self._init_wandb()
         
-        # MFU计算相关参数 - 修复batch_size获取
+        # MFU计算相关参数
         self.model_ref = None
         self.seq_length = config.get('model', {}).get('max_sequence_length', 512)
         
@@ -440,7 +494,7 @@ class TrainingMonitor:
         self.actual_flops = None  # 存储实际测量的FLOPs
         self.actual_seq_length = None  # 存储实际的序列长度（包含visual tokens）
         
-        print(f"📊 TrainingMonitor初始化: batch_size={self.batch_size}")
+        print(f"📊 TrainingMonitor初始化: batch_size={self.batch_size}, flops_profile_freq={self.flops_profile_freq}")
     
     def _init_monitor_frequencies(self):
         """初始化监控频率配置 - 修复版本，确保指标能正常显示"""
@@ -871,9 +925,14 @@ class TrainingMonitor:
                         else:
                             current_seq_length = self.seq_length
                         
-                        # 使用最新的FLOPs值计算MFU
-                        current_flops = real_time_flops if real_time_flops is not None else self.actual_flops
-                        mfu = calculate_mfu(self.model_ref, self.batch_size, current_seq_length, step_time, current_flops)
+                        # 使用profiler计算MFU
+                        if step % self.flops_profile_freq == 0:
+                            # 每flops_profile_freq步使用profiler计算MFU
+                            mfu = calculate_mfu_with_profiler(self.model_ref, self.batch_size, current_seq_length, step_time)
+                            print(f"🔍 步骤 {step}: 使用profiler计算MFU = {mfu:.4f}")
+                        else:
+                            # 其他步骤使用缓存的MFU值或返回0
+                            mfu = 0.0
                         
                         # 添加性能相关指标到perf组
                         wandb_data.update({
@@ -1176,3 +1235,5 @@ class DummyMonitor:
     def get_avg_metrics(self, last_n_steps: int = 100):
         """空实现，返回空字典"""
         return {} 
+
+ 

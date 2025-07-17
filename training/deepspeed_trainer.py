@@ -9,7 +9,7 @@ from collections import defaultdict
 from .utils.model_utils import save_hf_model
 from .utils.distributed import DistributedContext
 from .utils.evaluation import evaluate_multi_dataset
-from .utils.monitor import TrainingMonitor, make_json_serializable, calculate_mfu
+from .utils.monitor import TrainingMonitor, make_json_serializable
 from data.dataloader import create_full_eval_dataloader
 
 class DeepSpeedTrainer:
@@ -23,11 +23,14 @@ class DeepSpeedTrainer:
             from .utils.distributed import setup_nccl_timeout_env
             setup_nccl_timeout_env()
         
+        # 获取FLOPs profiling频率配置
+        flops_profile_freq = self.config.get('monitoring', {}).get('flops_profile_freq', 500)
+        
         # 只在主进程创建完整的TrainingMonitor，非主进程使用DummyMonitor
         if self.dist_ctx.is_main_process:
             from training.utils.monitor import TrainingMonitor
-            self.monitor = TrainingMonitor(self.config['output_dir'], config)
-            print("✅ 主进程：创建完整TrainingMonitor（包含wandb）")
+            self.monitor = TrainingMonitor(self.config['output_dir'], config, flops_profile_freq=flops_profile_freq)
+            print(f"✅ 主进程：创建完整TrainingMonitor（包含wandb），flops_profile_freq={flops_profile_freq}")
         else:
             from training.utils.monitor import DummyMonitor  
             self.monitor = DummyMonitor(self.config['output_dir'], config)
@@ -383,51 +386,7 @@ class DeepSpeedTrainer:
         if not is_eval:
             self.dataset_metrics.clear()
     
-    def _forward_backward_with_profiling(self, forward_kwargs):
-        """在前向+反向传播过程中实时测量FLOPs"""
-        try:
-            total_flops = 0.0
-            outputs = None
-            loss = None
-            
-            # 检查PyTorch是否支持FLOPs profiling
-            try:
-                # 使用profiler包装完整的前向+反向传播过程
-                with torch.profiler.profile(
-                    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-                    record_shapes=True,
-                    with_flops=True,
-                    profile_memory=False
-                ) as prof:
-                    # 前向传播
-                    outputs = self.model(**forward_kwargs)
-                    loss = outputs.loss
-                    
-                    # 反向传播
-                    self.model.backward(loss)
-                
-                # 收集FLOPs统计
-                for event in prof.events():
-                    if hasattr(event, 'flops') and event.flops > 0:
-                        total_flops += event.flops
-                
-                return outputs, loss, float(total_flops)
-                
-            except (AttributeError, TypeError) as e:
-                # 如果profiler不支持with_flops，回退到正常执行
-                print(f"⚠️  Profiler不支持FLOPs测量，使用正常模式: {e}")
-                outputs = self.model(**forward_kwargs)
-                loss = outputs.loss
-                self.model.backward(loss)
-                return outputs, loss, 0.0
-                
-        except Exception as e:
-            print(f"❌ 实时FLOPs测量失败: {e}")
-            # 发生错误时执行正常的前向+反向传播
-            outputs = self.model(**forward_kwargs)
-            loss = outputs.loss
-            self.model.backward(loss)
-            return outputs, loss, 0.0
+
         
     def evaluate(self, step=None, log_to_wandb=True):
         """评估模型，统一使用多数据集评估逻辑
@@ -677,7 +636,6 @@ class DeepSpeedTrainer:
             print("="*80)
         
         effective_step = 0  # 用于跟踪有效步数
-        flops_profiled = False  # 标记是否已经测量过FLOPs
         
         for epoch in range(num_epochs):
             self.current_epoch = epoch
@@ -717,47 +675,10 @@ class DeepSpeedTrainer:
                 if "num_classes_list" in batch:
                     forward_kwargs["num_classes_list"] = batch["num_classes_list"]
                 
-                # 决定是否进行实时FLOPs测量 - 大幅减少频率以避免性能开销
-                should_measure_flops = (
-                    not flops_profiled or  # 仅第一次测量
-                    (effective_step > 0 and effective_step % 500 == 0)  # 每500个有效步骤重新测量（而不是50步）
-                )
-                
-                # 实时FLOPs测量和模型前向+反向传播
-                if should_measure_flops and self.dist_ctx.is_main_process:
-                    # 在主进程中进行实时FLOPs测量（仅限必要时）
-                    outputs, loss, real_time_flops = self._forward_backward_with_profiling(forward_kwargs)
-                    
-                    # 更新FLOPs信息
-                    if real_time_flops > 0:
-                        self.monitor.set_actual_flops(real_time_flops, attention_mask.size(1))
-                        if not flops_profiled:
-                            print(f"✅ 实时测量FLOPs: {real_time_flops:.2e}")
-                        flops_profiled = True
-                else:
-                    # 正常的前向+反向传播（无profiling开销） - 大多数步骤使用这个路径
-                    outputs = self.model(**forward_kwargs)
-                    loss = outputs.loss
-                    self.model.backward(loss)
-                    real_time_flops = None
-                
-                # 简化分布式FLOPs同步 - 仅在首次测量时同步，避免每次都广播
-                if should_measure_flops and real_time_flops is not None and self.dist_ctx.world_size > 1 and not flops_profiled:
-                    import torch.distributed as dist
-                    
-                    # 仅在首次成功测量FLOPs时进行一次同步
-                    flops_tensor = torch.tensor(real_time_flops, dtype=torch.float32, device=self.dist_ctx.device)
-                    seq_tensor = torch.tensor(attention_mask.size(1), dtype=torch.float32, device=self.dist_ctx.device)
-                    
-                    try:
-                        dist.broadcast(flops_tensor, src=0)
-                        dist.broadcast(seq_tensor, src=0)
-                        
-                        # 所有进程更新FLOPs信息
-                        if not self.dist_ctx.is_main_process:
-                            self.monitor.set_actual_flops(flops_tensor.item(), int(seq_tensor.item()))
-                    except Exception as e:
-                        print(f"⚠️  FLOPs同步失败: {e}")
+                # 正常的前向+反向传播
+                outputs = self.model(**forward_kwargs)
+                loss = outputs.loss
+                self.model.backward(loss)
                 
                 # 聚合多卡loss（在分布式训练中）
                 aggregated_loss = self._aggregate_loss(loss)
@@ -801,10 +722,8 @@ class DeepSpeedTrainer:
                     
                     # 🔥 关键修复：总是调用log_step记录本地日志，但在eval步骤时跳过wandb记录避免重复
                     is_eval_step = (effective_step % eval_steps == 0)
-                    # 优化监控记录 - 仅在必要时传递real_time_flops
-                    step_real_time_flops = real_time_flops if should_measure_flops and real_time_flops is not None else None
                     # 在eval步骤时skip_wandb=True，避免重复记录到wandb
-                    self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, step_real_time_flops, skip_wandb=is_eval_step)
+                    self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, skip_wandb=is_eval_step)
                 
                     # 详细日志记录（基于有效步数判断输出频率）
                     if effective_step % logging_steps == 0:

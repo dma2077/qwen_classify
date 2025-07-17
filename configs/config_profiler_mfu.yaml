@@ -1,0 +1,170 @@
+# 使用PyTorch Profiler计算MFU的配置
+# 每flops_profile_freq步使用profiler计算一次MFU
+
+# 基础训练配置
+training:
+  num_epochs: 3
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 50
+  
+  # 评估配置
+  evaluation:
+    partial_eval_during_training: true
+    full_eval_at_end: true
+    eval_best_model_only: true
+  
+  # 最佳模型追踪
+  best_model_tracking:
+    enabled: true
+    metric: "overall_accuracy"
+    mode: "max"
+    save_best_only: true
+
+# 监控配置 - 使用profiler计算MFU
+monitoring:
+  # FLOPs profiling频率 - 每500步使用profiler计算一次MFU
+  flops_profile_freq: 500
+  
+  # 监控频率配置
+  all_freq: 10  # 每10步记录一次基础指标
+
+# 数据集配置
+datasets:
+  dataset_configs:
+    food101:
+      name: "food101"
+      num_classes: 101
+      eval_split: "validation"
+
+# DeepSpeed配置
+deepspeed:
+  train_micro_batch_size_per_gpu: 4
+  gradient_accumulation_steps: 4
+  train_batch_size: 64
+  steps_per_print: 10
+  
+  # 优化器配置
+  optimizer:
+    type: "AdamW"
+    params:
+      lr: 1e-5
+      weight_decay: 0.01
+      eps: 1e-8
+  
+  # 学习率调度器
+  scheduler:
+    type: "WarmupLR"
+    params:
+      warmup_min_lr: 0
+      warmup_max_lr: 1e-5
+      warmup_num_steps: 100
+  
+  # ZeRO优化
+  zero_optimization:
+    stage: 2
+    offload_optimizer:
+      device: "cpu"
+      pin_memory: true
+    offload_param:
+      device: "cpu"
+      pin_memory: true
+    overlap_comm: true
+    contiguous_gradients: true
+    reduce_bucket_size: 5e8
+    stage3_prefetch_bucket_size: 5e8
+    stage3_param_persistence_threshold: 5e6
+    sub_group_size: 1e9
+    stage3_max_live_parameters: 1e9
+    stage3_max_reuse_distance: 1e9
+    stage3_gather_16bit_weights_on_model_save: true
+
+# 模型配置
+model:
+  name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  revision: "main"
+  torch_dtype: "bfloat16"
+  device_map: "auto"
+  trust_remote_code: true
+  max_sequence_length: 512
+
+# 数据加载器配置
+data:
+  train_batch_size: 64
+  eval_batch_size: 64
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+
+# 输出配置
+output_dir: "./outputs/profiler_mfu_test"
+save_deepspeed_format: true
+save_hf_format: true
+
+# WandB配置
+wandb:
+  enabled: true
+  project: "qwen-classify-profiler-mfu"
+  name: "profiler-mfu-calculation"
+  log_dataset_metrics: true
+  
+  # 指标配置
+  metrics:
+    # 训练指标
+    training:
+      - "train/loss"
+      - "train/learning_rate"
+      - "train/grad_norm"
+      - "train/epoch"
+    
+    # 评估指标
+    evaluation:
+      - "eval/overall_loss"
+      - "eval/overall_accuracy"
+      - "eval/food101_accuracy"
+    
+    # 性能指标
+    performance:
+      - "perf/mfu"
+      - "perf/mfu_percent"
+      - "perf/step_time"
+      - "perf/steps_per_second"
+      - "perf/tokens_per_second"
+      - "perf/samples_per_second"
+      - "perf/gpu_memory_allocated_gb"
+      - "perf/gpu_memory_utilization_percent"
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# 使用说明
+usage_notes: |
+  # Profiler MFU计算配置说明
+  
+  ## 核心特性
+  - 使用PyTorch Profiler进行精确的FLOPs测量
+  - 每flops_profile_freq步计算一次MFU
+  - 其他步骤MFU值为0（避免重复计算开销）
+  
+  ## 配置参数
+  - flops_profile_freq: 500  # 每500步使用profiler计算一次MFU
+  
+  ## 性能特点
+  - 高精度：使用PyTorch Profiler获得精确的FLOPs测量
+  - 可控开销：只在指定步数进行profiling，其他步骤无开销
+  - 自动管理：profiler自动处理内存和资源管理
+  
+  ## 输出指标
+  - perf/mfu: Model FLOPs Utilization (0-1)
+  - perf/mfu_percent: MFU百分比 (0-100%)
+  - perf/step_time: 每步耗时
+  - perf/steps_per_second: 每秒步数
+  - perf/tokens_per_second: 每秒处理的token数
+  - perf/samples_per_second: 每秒处理的样本数
+  
+  ## 使用建议
+  - 对于需要精确MFU值的场景，建议flops_profile_freq设置为100-500
+  - 对于性能敏感的场景，可以设置为1000或更高
+  - 在训练初期可以设置较低频率进行调试，后期可以增加频率 
