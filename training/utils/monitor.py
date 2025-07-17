@@ -671,13 +671,9 @@ class TrainingMonitor:
             if wandb.run is None:
                 return
             
-            # 记录一个初始的eval指标，确保图表被创建（使用step=0）
-            initial_eval_data = {
-                "eval/overall_loss": 0.0,
-                "eval/overall_accuracy": 0.0,
-            }
-            wandb.log(initial_eval_data, step=0, commit=False)
-            print("📊 eval图表已初始化")
+            # 不预先记录初始值，让eval指标在真正评估时自然创建
+            # 这样避免step=0的无意义数据影响图表
+            print("📊 eval图表将在第一次评估时自动创建")
             
         except Exception as e:
             print(f"⚠️  创建eval图表失败: {e}")
@@ -980,6 +976,8 @@ class TrainingMonitor:
             # 确保所有值都是可序列化的
             log_data = {}
             eval_metrics_count = 0
+            eval_metrics_list = []
+            
             for key, value in metrics.items():
                 if isinstance(value, (int, float)):
                     log_data[key] = float(value)
@@ -988,22 +986,30 @@ class TrainingMonitor:
                 else:
                     log_data[key] = value
                 
-                # 统计eval指标数量
+                # 统计eval指标数量和名称
                 if 'eval/' in key:
                     eval_metrics_count += 1
+                    eval_metrics_list.append(key)
             
             # 记录指标
             if step is not None:
                 wandb.log(log_data, step=int(step), commit=commit)
+                step_info = f"step={step}"
             else:
                 wandb.log(log_data, commit=commit)
+                step_info = "auto-step"
             
             # 如果包含eval指标，特别说明
             if eval_metrics_count > 0:
-                print(f"📊 已记录 {eval_metrics_count} 个eval指标到WandB (step={step})")
-                
+                print(f"📊 已记录 {eval_metrics_count} 个eval指标到WandB ({step_info})")
+                print(f"   eval指标: {eval_metrics_list}")
+            
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")
+            print(f"   尝试记录的指标: {list(metrics.keys())}")
+            print(f"   step: {step}")
+            import traceback
+            traceback.print_exc()
     
     def save_logs(self):
         """保存日志到文件"""
