@@ -614,11 +614,15 @@ class TrainingMonitor:
                     # 定义eval指标
                     self._define_eval_metrics()
                     
-                    # 自动创建eval图表
+                    # 强制创建eval图表
                     self._create_eval_charts()
                     
                     # 创建详细图表
                     self._create_detailed_charts()
+                    
+                    # 🔥 强制提交初始化数据，确保eval指标被WandB识别
+                    wandb.log({}, commit=True)
+                    print("🔧 WandB初始化数据已提交")
             except Exception as display_error:
                 print(f"⚠️  wandb链接显示失败: {display_error}")
             
@@ -662,7 +666,7 @@ class TrainingMonitor:
             print(f"⚠️  定义eval指标失败: {e}")
     
     def _create_eval_charts(self):
-        """确保eval图表在wandb界面中可见"""
+        """强制确保eval图表在wandb界面中可见"""
         try:
             if not self.use_wandb or not self._is_main_process():
                 return
@@ -671,9 +675,25 @@ class TrainingMonitor:
             if wandb.run is None:
                 return
             
-            # 不预先记录初始值，让eval指标在真正评估时自然创建
-            # 这样避免step=0的无意义数据影响图表
-            print("📊 eval图表将在第一次评估时自动创建")
+            # 🔥 强制创建eval指标，确保WandB识别这些指标组
+            # 使用一个很大的step值，避免与实际训练step冲突
+            init_step = 999999
+            initial_eval_data = {
+                "eval/overall_loss": float('nan'),  # 使用NaN避免影响图表缩放
+                "eval/overall_accuracy": float('nan'),
+                "eval/overall_samples": 0,
+                "eval/overall_correct": 0,
+            }
+            
+            # 如果有多数据集配置，也创建对应的指标
+            dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
+            for dataset_name in dataset_configs.keys():
+                initial_eval_data[f"eval/{dataset_name}_loss"] = float('nan')
+                initial_eval_data[f"eval/{dataset_name}_accuracy"] = float('nan')
+                initial_eval_data[f"eval/{dataset_name}_samples"] = 0
+            
+            wandb.log(initial_eval_data, step=init_step, commit=False)
+            print(f"📊 eval图表已强制初始化 (step={init_step})")
             
         except Exception as e:
             print(f"⚠️  创建eval图表失败: {e}")
@@ -1003,6 +1023,14 @@ class TrainingMonitor:
             if eval_metrics_count > 0:
                 print(f"📊 已记录 {eval_metrics_count} 个eval指标到WandB ({step_info})")
                 print(f"   eval指标: {eval_metrics_list}")
+                
+                # 🔥 额外验证：检查WandB run状态
+                if wandb.run is not None:
+                    print(f"   WandB run状态: {wandb.run._get_status()}")
+                    print(f"   WandB项目: {wandb.run.project}")
+                    print(f"   实际记录的数据keys: {list(log_data.keys())}")
+                else:
+                    print("   ⚠️ WandB run为None！")
             
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")

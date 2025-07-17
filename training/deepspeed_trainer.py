@@ -375,9 +375,9 @@ class DeepSpeedTrainer:
                       f"Acc={overall_accuracy:.4f} ({overall_accuracy*100:.2f}%), "
                       f"Samples={overall_samples}")
         
-        # 记录到wandb时使用commit=False，避免step冲突
+        # 记录到wandb时使用commit=True，确保数据同步
         if dataset_log_data:
-            self.monitor.log_metrics(dataset_log_data, step, commit=False)
+            self.monitor.log_metrics(dataset_log_data, step, commit=True)
             
         # 如果不是eval模式，重置训练指标
         if not is_eval:
