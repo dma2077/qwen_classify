@@ -26,7 +26,8 @@ def test_eval_fix():
     # 1. 定义指标关系（模拟monitor的设置）
     print("📋 定义指标关系...")
     wandb.define_metric("step")
-    wandb.define_metric("*", step_metric="step")
+    wandb.define_metric("training/*", step_metric="step")
+    wandb.define_metric("eval/*", step_metric="step")
     
     print("✅ 已定义统一x轴：所有指标使用'step'")
     
@@ -49,14 +50,11 @@ def test_eval_fix():
             "step": step  # 🔥 使用统一的step字段
         }
         
-        try:
-            wandb.log(train_data, step=step, commit=True)
-            print(f"✅ Training数据记录成功: step={step}")
-        except Exception as e:
-            print(f"❌ Training数据记录失败: {e}")
+        # 准备记录数据，检查是否需要eval
+        is_eval_step = (step % eval_interval == 0)
         
-        # 每eval_interval步进行一次评估
-        if step % eval_interval == 0:
+        if is_eval_step:
+            # 如果是eval步骤，准备eval数据
             eval_data = {
                 "eval/overall_loss": 15.0 - step * 0.4 + random.uniform(-0.3, 0.3),
                 "eval/overall_accuracy": min(0.85, step * 0.03 + random.uniform(-0.02, 0.02)),
@@ -64,19 +62,29 @@ def test_eval_fix():
                 "eval/foodx251_accuracy": min(0.8, step * 0.025 + random.uniform(-0.015, 0.015)),
                 "eval/overall_samples": 1000,
                 "eval/overall_correct": int(1000 * min(0.85, step * 0.03)),
-                "step": step  # 🔥 关键：确保eval指标也有统一的step
             }
             
             print(f"📊 记录eval指标:")
             print(f"   eval/overall_loss: {eval_data['eval/overall_loss']:.4f}")
             print(f"   eval/overall_accuracy: {eval_data['eval/overall_accuracy']:.4f}")
-            print(f"   step: {eval_data['step']}")
+            print(f"   step: {step}")
+            
+            # 合并training和eval数据一次性记录
+            combined_data = {**train_data, **eval_data}
+            combined_data["step"] = step
             
             try:
-                wandb.log(eval_data, step=step, commit=True)
-                print(f"✅ Eval数据记录成功: step={step}")
+                wandb.log(combined_data, step=step, commit=True)
+                print(f"✅ Training+Eval数据一次性记录成功: step={step}")
             except Exception as e:
-                print(f"❌ Eval数据记录失败: {e}")
+                print(f"❌ 合并数据记录失败: {e}")
+        else:
+            # 只记录training数据
+            try:
+                wandb.log(train_data, step=step, commit=True)
+                print(f"✅ Training数据记录成功: step={step}")
+            except Exception as e:
+                print(f"❌ Training数据记录失败: {e}")
         
         # 短暂延迟模拟真实训练
         time.sleep(0.1)
@@ -91,34 +99,52 @@ def test_eval_fix():
     time.sleep(3)  # 等待数据同步
     
     try:
-        history = run.history()
-        print(f"   历史记录总条数: {len(history)}")
+        # 使用WandB API获取run数据
+        api = wandb.Api()
+        run_path = f"{run.entity}/{run.project}/{run.id}"
+        api_run = api.run(run_path)
         
-        # 检查step列
-        if 'step' in history.columns:
-            step_values = sorted(history['step'].dropna().unique().tolist())
-            print(f"   记录的Step值: {step_values}")
+        # 获取历史数据
+        history = api_run.scan_history()
+        history_list = list(history)
         
-        # 检查training列
-        training_cols = [col for col in history.columns if col.startswith('training/')]
-        if training_cols:
-            print(f"   Training列: {training_cols}")
-            for col in training_cols:
-                non_null = history[col].dropna()
-                steps_with_data = sorted(history[history[col].notna()]['step'].tolist())
-                print(f"     {col}: {len(non_null)} 条记录，步骤: {steps_with_data}")
+        print(f"   历史记录总条数: {len(history_list)}")
         
-        # 检查eval列
-        eval_cols = [col for col in history.columns if col.startswith('eval/')]
-        if eval_cols:
-            print(f"   Eval列: {eval_cols}")
-            for col in eval_cols:
-                non_null = history[col].dropna()
-                steps_with_data = sorted(history[history[col].notna()]['step'].tolist())
-                print(f"     {col}: {len(non_null)} 条记录，步骤: {steps_with_data}")
+        if history_list:
+            # 收集所有键
+            all_keys = set()
+            for record in history_list:
+                all_keys.update(record.keys())
+            
+            # 检查step
+            steps = [record.get('step') for record in history_list if 'step' in record]
+            if steps:
+                step_values = sorted([s for s in steps if s is not None])
+                print(f"   记录的Step值: {step_values}")
+            
+            # 检查training列
+            training_keys = [k for k in all_keys if k.startswith('training/')]
+            if training_keys:
+                print(f"   Training列: {training_keys}")
+                for key in training_keys:
+                    records_with_key = [r for r in history_list if key in r and r[key] is not None]
+                    steps_with_data = sorted([r.get('step') for r in records_with_key if 'step' in r])
+                    print(f"     {key}: {len(records_with_key)} 条记录，步骤: {steps_with_data}")
+            
+            # 检查eval列
+            eval_keys = [k for k in all_keys if k.startswith('eval/')]
+            if eval_keys:
+                print(f"   Eval列: {eval_keys}")
+                for key in eval_keys:
+                    records_with_key = [r for r in history_list if key in r and r[key] is not None]
+                    steps_with_data = sorted([r.get('step') for r in records_with_key if 'step' in r])
+                    print(f"     {key}: {len(records_with_key)} 条记录，步骤: {steps_with_data}")
+        else:
+            print("   ⚠️ 没有找到历史记录")
                 
     except Exception as e:
         print(f"   ❌ 获取历史记录失败: {e}")
+        print(f"   💡 这可能是因为数据还在同步中，请稍后在WandB界面查看")
     
     # 4. 最终提交
     print("\n🔄 最终数据同步...")
