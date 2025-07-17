@@ -144,12 +144,6 @@ def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> D
     
     # 🔥 确保模型处于评估模式 - 兼容DeepSpeed包装
     model.eval()
-    if hasattr(model, 'module'):
-        model.module.eval()
-        print(f"🔍 多数据集评估: 设置DeepSpeed包装模型为eval模式: model.training={model.training}, model.module.training={model.module.training}")
-    else:
-        print(f"🔍 多数据集评估: 设置模型为eval模式: model.training={model.training}")
-    
     # 检查分布式状态
     is_distributed = dist.is_available() and dist.is_initialized()
     if is_distributed:
