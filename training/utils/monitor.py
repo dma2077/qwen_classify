@@ -802,8 +802,12 @@ class TrainingMonitor:
         # 移除training/started记录，减少WandB调用
         print("✅ 训练监控已启动")
     
-    def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None):
-        """记录训练步骤 - 修复WandB记录频率，确保perf和training组指标正常显示"""
+    def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None, skip_wandb=False):
+        """记录训练步骤 - 修复WandB记录频率，确保perf和training组指标正常显示
+        
+        Args:
+            skip_wandb: 如果为True，跳过wandb记录（用于eval步骤时避免重复记录）
+        """
         current_time = time.time()
         step_time = current_time - self.step_start_time
         
@@ -828,7 +832,7 @@ class TrainingMonitor:
         self.step_logs.append(log_entry)
         
         # 🔥 修复WandB记录频率 - 确保training和perf组指标正常显示，使用动态频率
-        if self.use_wandb and self._is_main_process():
+        if self.use_wandb and self._is_main_process() and not skip_wandb:
             # 使用动态频率配置
             should_log_training = (step % self.freq['training_log_freq'] == 0)
             
@@ -1116,7 +1120,7 @@ class DummyMonitor:
         """空实现，非主进程不启动训练监控"""
         pass
         
-    def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None):
+    def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None, skip_wandb=False):
         """空实现，非主进程不记录步骤"""
         pass
     

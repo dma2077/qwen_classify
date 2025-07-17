@@ -796,12 +796,12 @@ class DeepSpeedTrainer:
                             'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
                         })
                     
-                    # 🔥 关键修复：只在非eval步骤记录training数据，避免重复记录
+                    # 🔥 关键修复：总是调用log_step记录本地日志，但在eval步骤时跳过wandb记录避免重复
                     is_eval_step = (effective_step % eval_steps == 0)
-                    if not is_eval_step:
-                        # 优化监控记录 - 仅在必要时传递real_time_flops
-                        step_real_time_flops = real_time_flops if should_measure_flops and real_time_flops is not None else None
-                        self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, step_real_time_flops)
+                    # 优化监控记录 - 仅在必要时传递real_time_flops
+                    step_real_time_flops = real_time_flops if should_measure_flops and real_time_flops is not None else None
+                    # 在eval步骤时skip_wandb=True，避免重复记录到wandb
+                    self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, step_real_time_flops, skip_wandb=is_eval_step)
                 
                     # 详细日志记录（基于有效步数判断输出频率）
                     if effective_step % logging_steps == 0:
@@ -848,12 +848,40 @@ class DeepSpeedTrainer:
                             eval_loss, eval_accuracy = self.evaluate(step=None)  # 传入None避免在evaluate中记录
                             
                             # 🔥 获取当前训练数据，与eval数据合并记录
+                            # 构建完整的training数据（包括性能指标）
+                            current_time = time.time()
+                            step_time = current_time - self.monitor.step_start_time if self.monitor.step_start_time else 0.0
+                            
                             current_training_data = {
                                 "training/loss": float(aggregated_loss),
                                 "training/lr": float(current_lr), 
                                 "training/epoch": float(epoch),
                                 "training/grad_norm": float(grad_norm_value),
                             }
+                            
+                            # 检查是否需要添加性能指标（基于频率配置）
+                            should_log_perf = (effective_step % self.monitor.freq['perf_log_freq'] == 0)
+                            if should_log_perf and step_time > 0:
+                                current_training_data.update({
+                                    "perf/step_time": float(step_time),
+                                    "perf/steps_per_second": float(1.0 / step_time),
+                                })
+                                
+                                # 添加MFU相关指标（如果可用）
+                                if (self.monitor.model_ref is not None and 
+                                    self.monitor.actual_flops is not None and 
+                                    attention_mask is not None):
+                                    from .utils.monitor import calculate_mfu
+                                    current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
+                                    actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
+                                    current_mfu = calculate_mfu(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time, self.monitor.actual_flops)
+                                    
+                                    current_training_data.update({
+                                        "perf/mfu": float(current_mfu),
+                                        "perf/mfu_percent": float(current_mfu * 100),
+                                        "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
+                                        "perf/samples_per_second": float(actual_batch_size / step_time),
+                                    })
                             
                             # 准备eval数据
                             eval_data = {
