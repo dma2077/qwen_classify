@@ -637,8 +637,10 @@ class TrainingMonitor:
                 return
             
             import wandb
+            if wandb.run is None:
+                return
             
-            # 简化指标定义，不使用step_metric
+            # 定义核心eval指标
             wandb.define_metric("eval/overall_loss", summary="min")
             wandb.define_metric("eval/overall_accuracy", summary="max")
             wandb.define_metric("eval/overall_samples", summary="last")
@@ -651,23 +653,31 @@ class TrainingMonitor:
                 wandb.define_metric(f"eval/{dataset_name}_accuracy", summary="max")
                 wandb.define_metric(f"eval/{dataset_name}_samples", summary="last")
             
+            # 定义最终评估指标
+            wandb.define_metric("eval/final_evaluation", summary="last")
+            
             print("✅ 已定义eval指标配置")
             
         except Exception as e:
             print(f"⚠️  定义eval指标失败: {e}")
     
     def _create_eval_charts(self):
-        """自动创建eval图表，确保eval指标在wandb界面中显示"""
+        """确保eval图表在wandb界面中可见"""
         try:
             if not self.use_wandb or not self._is_main_process():
                 return
             
             import wandb
+            if wandb.run is None:
+                return
             
-            # 不记录初始指标，让eval指标在第一次真正的评估时创建
-            # 这样可以避免step=0的初始值影响后续的数据更新
-            
-            print("📊 eval图表将在第一次评估时自动创建")
+            # 记录一个初始的eval指标，确保图表被创建（使用step=0）
+            initial_eval_data = {
+                "eval/overall_loss": 0.0,
+                "eval/overall_accuracy": 0.0,
+            }
+            wandb.log(initial_eval_data, step=0, commit=False)
+            print("📊 eval图表已初始化")
             
         except Exception as e:
             print(f"⚠️  创建eval图表失败: {e}")
@@ -923,31 +933,33 @@ class TrainingMonitor:
     def log_evaluation(self, step: int, eval_loss: float, eval_accuracy: float, additional_metrics: dict = None):
         """记录评估结果 - 在eval组中显示指标"""
         if self.use_wandb and self._is_main_process():
-            # 确保eval图表已创建
-            if not hasattr(self, '_eval_charts_created'):
-                self._ensure_eval_charts_visible()
-                self._eval_charts_created = True
-            
-            log_data = {
-                "eval/loss": float(eval_loss),
-                "eval/accuracy": float(eval_accuracy),
-                "global_step": int(step)
-            }
-            
-            # 添加额外的指标
-            if additional_metrics:
-                for key, value in additional_metrics.items():
-                    # 确保额外指标也在eval组中
-                    if not key.startswith('eval/'):
-                        key = f"eval/{key}"
-                    log_data[key] = float(value) if isinstance(value, (int, float)) else value
-            
-            wandb.log(log_data, step=int(step), commit=True)
-            print(f"📊 评估指标已记录到wandb (step={step}): {list(log_data.keys())}")
-            print(f"🔗 请访问wandb界面查看eval图表: {wandb.run.url}")
+            try:
+                import wandb
+                if wandb.run is None:
+                    print("⚠️ WandB未初始化，跳过eval指标记录")
+                    return
+                
+                log_data = {
+                    "eval/overall_loss": float(eval_loss),
+                    "eval/overall_accuracy": float(eval_accuracy),
+                }
+                
+                # 添加额外的指标
+                if additional_metrics:
+                    for key, value in additional_metrics.items():
+                        # 确保额外指标也在eval组中
+                        if not key.startswith('eval/'):
+                            key = f"eval/{key}"
+                        log_data[key] = float(value) if isinstance(value, (int, float)) else value
+                
+                wandb.log(log_data, step=int(step), commit=True)
+                print(f"📊 评估指标已记录到WandB (step={step}): {list(log_data.keys())}")
+                
+            except Exception as e:
+                print(f"❌ 记录eval指标失败: {e}")
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
-        """通用的指标记录方法 - 优化版本，减少额外调用"""
+        """通用的指标记录方法 - 确保eval指标正确记录"""
         # 检查是否是主进程且wandb可用
         if not self.use_wandb or not self._is_main_process():
             return
@@ -959,6 +971,7 @@ class TrainingMonitor:
         try:
             import wandb
             if wandb.run is None:
+                print("⚠️ WandB未初始化，跳过指标记录")
                 return
         except Exception as e:
             return
@@ -966,6 +979,7 @@ class TrainingMonitor:
         try:
             # 确保所有值都是可序列化的
             log_data = {}
+            eval_metrics_count = 0
             for key, value in metrics.items():
                 if isinstance(value, (int, float)):
                     log_data[key] = float(value)
@@ -973,16 +987,20 @@ class TrainingMonitor:
                     log_data[key] = float(value.item())
                 else:
                     log_data[key] = value
+                
+                # 统计eval指标数量
+                if 'eval/' in key:
+                    eval_metrics_count += 1
             
-            # 检查是否包含eval指标
-            has_eval_metrics = any('eval' in key for key in log_data.keys())
-            
-            # 移除冗余的eval标记记录，减少WandB调用
-            # 直接记录主要指标
+            # 记录指标
             if step is not None:
                 wandb.log(log_data, step=int(step), commit=commit)
             else:
                 wandb.log(log_data, commit=commit)
+            
+            # 如果包含eval指标，特别说明
+            if eval_metrics_count > 0:
+                print(f"📊 已记录 {eval_metrics_count} 个eval指标到WandB (step={step})")
                 
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")

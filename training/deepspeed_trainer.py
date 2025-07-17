@@ -500,10 +500,13 @@ class DeepSpeedTrainer:
             self.dist_ctx.print_main(f"✅ 正确样本:   {overall_correct:,}")
             self.dist_ctx.print_main("=" * 80)
             
-            # 记录到WandB
+            # 记录到WandB - 使用专门的评估记录方法确保正确显示
             try:
+                # 使用log_metrics记录所有详细指标
                 self.monitor.log_metrics(eval_log_data, current_step)
-                self.dist_ctx.print_main(f"✅ 评估指标已记录到WandB")
+                # 同时使用log_evaluation确保基础eval指标正确显示
+                self.monitor.log_evaluation(current_step, overall_loss, overall_accuracy)
+                self.dist_ctx.print_main(f"✅ 评估指标已记录到WandB (包含{len(eval_log_data)}个指标)")
             except Exception as wandb_error:
                 self.dist_ctx.print_main(f"⚠️  WandB记录失败: {wandb_error}")
             
@@ -899,11 +902,15 @@ class DeepSpeedTrainer:
                 print(f"🏆 最佳模型 - {self.best_metric_name}: {self.best_metric_value:.4f} (步骤 {self.best_model_step})")
                 print(f"🏆 最佳模型路径: {self.best_model_path}")
         
-        # 记录最终评估结果并结束wandb run
-        # 注意：如果是多数据集评估，结果已经在evaluate方法中记录了
-        # 只有单数据集情况下才需要这里记录
-        if not (self.dataset_configs and self.enable_dataset_metrics):
-            self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy)
+        # 确保最终评估结果被记录到WandB
+        # 无论是单数据集还是多数据集，都记录最终的整体指标
+        try:
+            self.monitor.log_evaluation(effective_step, eval_loss, eval_accuracy, {
+                "final_evaluation": 1.0  # 标记这是最终评估
+            })
+            self.dist_ctx.print_main(f"✅ 最终评估结果已记录到WandB")
+        except Exception as final_eval_error:
+            self.dist_ctx.print_main(f"⚠️ 最终评估WandB记录失败: {final_eval_error}")
         self.monitor.save_logs()
         
         # 训练结束后进行最终清理
