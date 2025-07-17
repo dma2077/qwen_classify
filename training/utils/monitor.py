@@ -505,7 +505,7 @@ class TrainingMonitor:
         # 🔥 所有频率都从monitor.freq中独立设置
         self.freq = {
             'training_log_freq': freq_config.get('training_log_freq', 10),           # 训练指标记录频率
-            'perf_log_freq': freq_config.get('perf_log_freq', 20),                   # 性能指标记录频率
+            'perf_log_freq': freq_config.get('perf_log_freq', 10),                   # 性能指标记录频率（降低到10步）
             'gpu_log_freq': freq_config.get('gpu_log_freq', 50),                     # GPU监控频率
             'local_save_freq': freq_config.get('local_save_freq', 200),              # 本地保存频率
             'progress_update_freq': freq_config.get('progress_update_freq', 10),     # 进度更新频率
@@ -1166,22 +1166,15 @@ class TrainingMonitor:
                     print(f"   WandB run ID: {wandb.run.id}")
                     print(f"   实际记录的数据keys: {list(log_data.keys())}")
                     
-                    # 🔥 强制刷新，确保数据同步
-                    try:
-                        wandb.log({}, commit=True)  # 强制提交
-                        print(f"   ✅ 强制提交完成")
-                    except Exception as flush_error:
-                        print(f"   ⚠️ 强制提交失败: {flush_error}")
-                else:
-                    print("   ⚠️ WandB run为None！")
-                
-                # 🔥 新增：确保数据提交到WandB服务器
+                                    # 🔥 确保数据提交到WandB服务器
                 try:
                     # 强制提交当前数据
                     wandb.log({}, commit=True)
                     print(f"   ✅ WandB数据提交完成")
                 except Exception as commit_error:
                     print(f"   ⚠️ WandB提交失败: {commit_error}")
+                else:
+                    print("   ⚠️ WandB run为None！")
             
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")

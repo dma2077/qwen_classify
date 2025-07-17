@@ -248,6 +248,19 @@ class DeepSpeedTrainer:
                     "perf/flops_per_second": float(self.monitor.actual_flops / step_time),
                 })
                 
+                # 输出MFU记录信息
+                if self.dist_ctx.is_main_process:
+                    print(f"📊 MFU记录 (step={effective_step}): {current_mfu:.3f} ({current_mfu*100:.1f}%)")
+            else:
+                # 如果MFU计算失败，记录原因
+                if self.dist_ctx.is_main_process:
+                    print(f"⚠️ MFU计算失败 (step={effective_step}): model_ref={self.monitor.model_ref is not None}, "
+                          f"attention_mask={attention_mask is not None}, actual_flops={self.monitor.actual_flops is not None}")
+        elif should_log_perf and step_time <= 0:
+            # 如果步骤时间为0，记录警告
+            if self.dist_ctx.is_main_process:
+                print(f"⚠️ 步骤时间为0，跳过性能指标记录 (step={effective_step})")
+                
         return training_data
         
     def _handle_effective_step(self, effective_step, epoch, batch_idx, aggregated_loss, current_lr, 
@@ -295,20 +308,24 @@ class DeepSpeedTrainer:
             # 准备eval数据
             eval_data = self._build_eval_metrics(eval_loss, eval_accuracy, eval_results)
             
-            # 🔥 修复：分别记录training和eval指标，避免步骤冲突
-            # 先记录training指标
+            # 🔥 修复：分别记录training和eval指标，确保每次eval都能正确记录
             if self.dist_ctx.is_main_process:
+                # 先记录training指标（使用commit=False，避免覆盖）
                 self.monitor.log_metrics(current_training_data, effective_step, commit=False)
-                print(f"✅ 训练指标已记录到WandB (step={effective_step})")
-            
-            # 再记录eval指标（使用相同的step，但commit=True）
-            if self.dist_ctx.is_main_process:
+                
+                # 再记录eval指标（使用commit=True，确保数据提交）
                 self.monitor.log_metrics(eval_data, effective_step, commit=True)
+                
+                # 输出详细的记录信息
                 eval_metrics_list = [k for k in eval_data.keys() if k.startswith('eval/')]
-                print(f"✅ 评估指标已记录到WandB (step={effective_step})")
+                training_metrics_list = [k for k in current_training_data.keys() if k.startswith('training/')]
+                
+                print(f"✅ 训练和评估指标已记录到WandB (step={effective_step})")
                 print(f"   📊 记录的eval指标: {eval_metrics_list}")
+                print(f"   🏃 记录的training指标: {training_metrics_list}")
                 print(f"   📈 整体准确率: {eval_accuracy:.4f}")
                 print(f"   📉 整体损失: {eval_loss:.6f}")
+                print(f"   🔢 training指标数量: {len(current_training_data)}, eval指标数量: {len(eval_data)}")
                 
         except Exception as eval_error:
             if self.dist_ctx.is_main_process:
@@ -515,6 +532,29 @@ class DeepSpeedTrainer:
         
         # 打印训练配置信息
         self._print_training_config(stats)
+        
+        # 🔥 初始化FLOPs profiling，确保MFU能够正确记录
+        if self.dist_ctx.is_main_process:
+            self.dist_ctx.print_main("🔍 初始化FLOPs profiling...")
+            try:
+                # 获取第一个batch进行FLOPs profiling
+                first_batch = next(iter(self.train_loader))
+                forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(first_batch)
+                
+                # 进行FLOPs profiling
+                batch_example = {
+                    "input_ids": inputs,
+                    "attention_mask": attention_mask,
+                    "pixel_values": forward_kwargs.get("pixel_values"),
+                    "labels": labels
+                }
+                
+                self.monitor.profile_model_flops(batch_example)
+                self.dist_ctx.print_main("✅ FLOPs profiling完成，MFU计算已启用")
+                
+            except Exception as flops_error:
+                self.dist_ctx.print_main(f"⚠️ FLOPs profiling失败: {flops_error}")
+                self.dist_ctx.print_main("⚠️ MFU计算将被禁用")
         
         # 创建进度条（基于有效训练步数）
         self.pbar = tqdm(total=stats['total_effective_steps'], desc="Training Steps", disable=not self.dist_ctx.is_main_process)
