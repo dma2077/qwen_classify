@@ -740,7 +740,7 @@ class DeepSpeedTrainer:
                         )
                         
                         # 如果进行了实时FLOPs测量，添加MFU信息
-                        if should_measure_flops and hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
+                        if hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
                             # 计算当前步骤的时间（从上次记录到现在）
                             current_time = time.time()
                             actual_step_time = current_time - self.monitor.step_start_time
@@ -748,11 +748,11 @@ class DeepSpeedTrainer:
                             current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
                             # 使用实际的批次大小（考虑分布式训练）
                             actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-                            current_mfu = calculate_mfu(self.model, actual_batch_size, current_seq_length, 
-                                                      actual_step_time, self.monitor.actual_flops)
+                            from .utils.monitor import calculate_mfu_with_profiler
+                            current_mfu = calculate_mfu_with_profiler(self.model, actual_batch_size, current_seq_length, actual_step_time)
                             log_message += f" | MFU: {current_mfu:.1%}"
                             
-                            if should_measure_flops:
+                            if hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
                                 log_message += " [📊实时测量]"
                         
                         # 打印日志信息
@@ -792,12 +792,11 @@ class DeepSpeedTrainer:
                                 
                                 # 添加MFU相关指标（如果可用）
                                 if (self.monitor.model_ref is not None and 
-                                    self.monitor.actual_flops is not None and 
                                     attention_mask is not None):
-                                    from .utils.monitor import calculate_mfu
+                                    from .utils.monitor import calculate_mfu_with_profiler
                                     current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
                                     actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-                                    current_mfu = calculate_mfu(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time, self.monitor.actual_flops)
+                                    current_mfu = calculate_mfu_with_profiler(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time)
                                     
                                     current_training_data.update({
                                         "perf/mfu": float(current_mfu),

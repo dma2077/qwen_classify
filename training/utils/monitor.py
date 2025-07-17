@@ -821,7 +821,7 @@ class TrainingMonitor:
             
             # 估算一个样本的MFU (假设1秒的step time)
             sample_step_time = 1.0
-            sample_mfu = calculate_mfu(self.model_ref, self.batch_size, self.actual_seq_length, sample_step_time, self.actual_flops)
+            sample_mfu = calculate_mfu_with_profiler(self.model_ref, self.batch_size, self.actual_seq_length, sample_step_time)
             print(f"  • 理论最大MFU (1秒/步): {sample_mfu:.4f} ({sample_mfu*100:.2f}%)")
             
             # 计算达到目标MFU所需的步骤时间
