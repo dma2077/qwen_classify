@@ -644,23 +644,28 @@ class TrainingMonitor:
             if wandb.run is None:
                 return
             
+            # 🔥 关键修复：定义eval指标与effective_step的关系，确保x轴对齐
+            # 在DeepSpeed训练中，使用effective_step而不是global_step
+            wandb.define_metric("effective_step")
+            wandb.define_metric("eval/*", step_metric="effective_step")
+            
             # 定义核心eval指标
-            wandb.define_metric("eval/overall_loss", summary="min")
-            wandb.define_metric("eval/overall_accuracy", summary="max")
-            wandb.define_metric("eval/overall_samples", summary="last")
-            wandb.define_metric("eval/overall_correct", summary="last")
+            wandb.define_metric("eval/overall_loss", summary="min", step_metric="effective_step")
+            wandb.define_metric("eval/overall_accuracy", summary="max", step_metric="effective_step")
+            wandb.define_metric("eval/overall_samples", summary="last", step_metric="effective_step")
+            wandb.define_metric("eval/overall_correct", summary="last", step_metric="effective_step")
             
             # 定义数据集特定的eval指标
             dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
             for dataset_name in dataset_configs.keys():
-                wandb.define_metric(f"eval/{dataset_name}_loss", summary="min")
-                wandb.define_metric(f"eval/{dataset_name}_accuracy", summary="max")
-                wandb.define_metric(f"eval/{dataset_name}_samples", summary="last")
+                wandb.define_metric(f"eval/{dataset_name}_loss", summary="min", step_metric="effective_step")
+                wandb.define_metric(f"eval/{dataset_name}_accuracy", summary="max", step_metric="effective_step")
+                wandb.define_metric(f"eval/{dataset_name}_samples", summary="last", step_metric="effective_step")
             
             # 定义最终评估指标
-            wandb.define_metric("eval/final_evaluation", summary="last")
+            wandb.define_metric("eval/final_evaluation", summary="last", step_metric="effective_step")
             
-            print("✅ 已定义eval指标配置")
+            print("✅ 已定义eval指标配置（与effective_step同步）")
             
         except Exception as e:
             print(f"⚠️  定义eval指标失败: {e}")
@@ -675,25 +680,27 @@ class TrainingMonitor:
             if wandb.run is None:
                 return
             
-            # 🔥 强制创建eval指标，确保WandB识别这些指标组
-            # 使用step 0先记录一次，立即commit，确保eval组图表创建
-            step_0_eval_data = {
-                "eval/overall_loss": 999.0,  # 使用明显的初始值，后续真实数据会覆盖
-                "eval/overall_accuracy": 0.0,
-                "eval/overall_samples": 0,
-                "eval/overall_correct": 0,
-            }
+            # 🔥 新策略：不再强制记录占位符数据，而是依赖metric定义和首次真实eval数据
+            # 这样可以避免图表中出现不相关的初始值
             
-            # 如果有多数据集配置，也创建对应的指标
+            # 准备eval指标列表（用于日志输出）
+            eval_metrics_list = [
+                "eval/overall_loss",
+                "eval/overall_accuracy", 
+                "eval/overall_samples",
+                "eval/overall_correct"
+            ]
+            
+            # 如果有多数据集配置，也添加对应的指标
             dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
             for dataset_name in dataset_configs.keys():
-                step_0_eval_data[f"eval/{dataset_name}_loss"] = 999.0
-                step_0_eval_data[f"eval/{dataset_name}_accuracy"] = 0.0
-                step_0_eval_data[f"eval/{dataset_name}_samples"] = 0
+                eval_metrics_list.extend([
+                    f"eval/{dataset_name}_loss",
+                    f"eval/{dataset_name}_accuracy",
+                    f"eval/{dataset_name}_samples"
+                ])
             
-            # 立即记录到step 0，确保图表创建
-            wandb.log(step_0_eval_data, step=0, commit=True)
-            print(f"📊 eval图表已强制初始化 (step=0) - 指标: {list(step_0_eval_data.keys())}")
+            print(f"📊 eval图表已准备就绪，等待首次评估数据 - 指标: {eval_metrics_list}")
             
         except Exception as e:
             print(f"⚠️  创建eval图表失败: {e}")
@@ -847,7 +854,7 @@ class TrainingMonitor:
                     "training/lr": float(learning_rate), 
                     "training/epoch": float(epoch),
                     "training/grad_norm": float(grad_norm),
-                    "global_step": int(step)
+                    "effective_step": int(step)  # 🔥 使用effective_step替代global_step
                 }
                 
                 # 使用动态性能指标频率
@@ -1011,6 +1018,10 @@ class TrainingMonitor:
                     eval_metrics_count += 1
                     eval_metrics_list.append(key)
             
+            # 🔥 关键修复：为eval指标添加effective_step，确保与训练指标x轴同步
+            if eval_metrics_count > 0 and step is not None:
+                log_data["effective_step"] = int(step)
+            
             # 记录指标
             if step is not None:
                 wandb.log(log_data, step=int(step), commit=commit)
@@ -1023,6 +1034,7 @@ class TrainingMonitor:
             if eval_metrics_count > 0:
                 print(f"📊 已记录 {eval_metrics_count} 个eval指标到WandB ({step_info})")
                 print(f"   eval指标: {eval_metrics_list}")
+                print(f"   包含effective_step: {log_data.get('effective_step', 'N/A')}")
                 
                 # 🔥 额外验证：检查WandB run状态
                 if wandb.run is not None:
