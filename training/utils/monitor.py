@@ -443,22 +443,23 @@ class TrainingMonitor:
         print(f"📊 TrainingMonitor初始化: batch_size={self.batch_size}")
     
     def _init_monitor_frequencies(self):
-        """初始化监控频率配置 - 仅支持all_freq统一设置"""
+        """初始化监控频率配置 - 修复版本，确保指标能正常显示"""
         # 从config中获取monitor频率配置
         monitor_config = self.config.get('monitor', {})
         freq_config = monitor_config.get('freq', {})
         
-        # 获取统一频率设置，如果没有则使用默认值100
-        all_freq = freq_config.get('all_freq', 100)
+        # 🔥 修复：降低默认频率，确保指标能正常显示
+        # 如果没有配置，使用更低的默认值，确保指标能被记录
+        all_freq = freq_config.get('all_freq', 10)  # 从100改为10
         
-        # 基于all_freq计算所有频率，保持固定的比例关系
+        # 基于all_freq计算所有频率，但设置合理的上限
         self.freq = {
-            'training_log_freq': all_freq,
-            'perf_log_freq': max(all_freq * 2, 1),      # 性能指标频率稍低
-            'gpu_log_freq': max(all_freq * 4, 1),       # GPU监控频率更低
-            'flops_profile_freq': max(all_freq * 2, 1), # FLOPs测量频率与perf保持一致
-            'local_save_freq': max(all_freq * 20, 1),   # 本地保存频率最低
-            'progress_update_freq': max(all_freq // 5, 1), # 进度更新更频繁
+            'training_log_freq': min(all_freq, 10),           # 训练指标：最多每10步
+            'perf_log_freq': min(all_freq * 2, 20),           # 性能指标：最多每20步
+            'gpu_log_freq': min(all_freq * 4, 50),            # GPU监控：最多每50步
+            'flops_profile_freq': min(all_freq * 2, 20),      # FLOPs测量：最多每20步
+            'local_save_freq': min(all_freq * 20, 200),       # 本地保存：最多每200步
+            'progress_update_freq': max(all_freq // 5, 1),    # 进度更新：至少每1步
             'eval_log_freq': 1,  # 评估时每步都记录
         }
         
@@ -466,6 +467,10 @@ class TrainingMonitor:
         print(f"🔧 监控频率配置 (all_freq={all_freq}):")
         for key, value in self.freq.items():
             print(f"   {key}: 每{value}步")
+        
+        # 🔥 额外提示：如果频率太高，建议调整
+        if all_freq > 50:
+            print(f"⚠️  建议：all_freq={all_freq}可能太高，建议设置为1-20以确保指标正常显示")
     
     def _get_effective_batch_size(self, config: Dict) -> int:
         """正确获取有效的batch size"""

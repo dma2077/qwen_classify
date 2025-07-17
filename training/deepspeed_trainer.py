@@ -429,11 +429,12 @@ class DeepSpeedTrainer:
             self.model.backward(loss)
             return outputs, loss, 0.0
         
-    def evaluate(self, step=None):
+    def evaluate(self, step=None, log_to_wandb=True):
         """评估模型，统一使用多数据集评估逻辑
         
         Args:
             step: 当前步数，如果提供则用于最佳模型保存；否则使用self.current_step
+            log_to_wandb: 是否记录到WandB，默认为True
         """
         current_step = step if step is not None else self.current_step
         
@@ -500,8 +501,8 @@ class DeepSpeedTrainer:
             self.dist_ctx.print_main(f"✅ 正确样本:   {overall_correct:,}")
             self.dist_ctx.print_main("=" * 80)
             
-            # 记录到WandB - 🔥 修复：只在step不为None时记录，避免重复记录
-            if current_step is not None:
+            # 记录到WandB - 🔥 修复：根据log_to_wandb参数决定是否记录
+            if current_step is not None and log_to_wandb:
                 try:
                     # 将基础eval指标合并到详细指标中，一次性记录
                     eval_log_data.update({
@@ -514,8 +515,10 @@ class DeepSpeedTrainer:
                     self.dist_ctx.print_main(f"✅ 评估指标已记录到WandB (包含{len(eval_log_data)}个指标)")
                 except Exception as wandb_error:
                     self.dist_ctx.print_main(f"⚠️  WandB记录失败: {wandb_error}")
-            else:
+            elif current_step is not None and not log_to_wandb:
                 self.dist_ctx.print_main(f"📊 评估完成但未记录到WandB (将由调用方合并记录)")
+            else:
+                self.dist_ctx.print_main(f"📊 评估完成但未记录到WandB (step=None)")
             
             # 更新最佳模型 - 只在step不为None时更新
             if current_step is not None:
@@ -845,7 +848,8 @@ class DeepSpeedTrainer:
                         # 添加评估异常处理，避免NCCL超时导致训练中断
                         try:
                             # 🔥 关键修复：获取eval数据但不让evaluate方法记录到wandb
-                            eval_loss, eval_accuracy = self.evaluate(step=None)  # 传入None避免在evaluate中记录
+                            # 传入effective_step，但设置log_to_wandb=False避免重复记录
+                            eval_loss, eval_accuracy = self.evaluate(step=effective_step, log_to_wandb=False)  # 传入effective_step避免在evaluate中记录
                             
                             # 🔥 获取当前训练数据，与eval数据合并记录
                             # 构建完整的training数据（包括性能指标）
