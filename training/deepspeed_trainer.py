@@ -24,7 +24,7 @@ class DeepSpeedTrainer:
             setup_nccl_timeout_env()
         
         # 获取FLOPs profiling频率配置
-        flops_profile_freq = self.config.get('monitoring', {}).get('flops_profile_freq', 500)
+        flops_profile_freq = self.config.get('monitor', {}).get('freq', {}).get('flops_profile_freq', 500)
         
         # 只在主进程创建完整的TrainingMonitor，非主进程使用DummyMonitor
         if self.dist_ctx.is_main_process:

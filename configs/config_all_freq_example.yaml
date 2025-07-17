@@ -1,0 +1,105 @@
+# 独立频率配置示例
+# 展示如何独立设置每个监控频率
+
+# 基础训练配置
+training:
+  num_epochs: 3
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 50
+
+# 监控配置 - 所有频率独立设置
+monitor:
+  freq:
+    training_log_freq: 100      # 训练指标记录频率
+    eval_log_freq: 1            # 评估指标记录频率
+    perf_log_freq: 200          # 性能指标记录频率
+    gpu_log_freq: 400           # GPU监控频率
+    flops_profile_freq: 200     # MFU计算频率
+    local_save_freq: 2000       # 本地日志保存频率
+    progress_update_freq: 50    # 进度更新频率
+
+# 不同场景的配置示例
+
+# 调试环境配置 (高频率)
+monitor_debug:
+  freq:
+    training_log_freq: 20       # 每20步记录训练指标
+    eval_log_freq: 1            # 每步都记录评估指标
+    perf_log_freq: 40           # 每40步记录性能指标
+    gpu_log_freq: 80            # 每80步监控GPU
+    flops_profile_freq: 40      # 每40步计算MFU
+    local_save_freq: 400        # 每400步保存本地日志
+    progress_update_freq: 10    # 每10步更新进度
+
+# 开发环境配置 (中等频率)
+monitor_development:
+  freq:
+    training_log_freq: 50       # 每50步记录训练指标
+    eval_log_freq: 1            # 每步都记录评估指标
+    perf_log_freq: 100          # 每100步记录性能指标
+    gpu_log_freq: 200           # 每200步监控GPU
+    flops_profile_freq: 100     # 每100步计算MFU
+    local_save_freq: 1000       # 每1000步保存本地日志
+    progress_update_freq: 25    # 每25步更新进度
+
+# 生产环境配置 (低频率)
+monitor_production:
+  freq:
+    training_log_freq: 200      # 每200步记录训练指标
+    eval_log_freq: 1            # 每步都记录评估指标
+    perf_log_freq: 400          # 每400步记录性能指标
+    gpu_log_freq: 800           # 每800步监控GPU
+    flops_profile_freq: 400     # 每400步计算MFU
+    local_save_freq: 4000       # 每4000步保存本地日志
+    progress_update_freq: 100   # 每100步更新进度
+
+# 使用说明
+usage_notes: |
+  # 独立频率配置说明
+  
+  ## 配置结构
+  ```yaml
+  monitor:
+    freq:
+      training_log_freq: 100      # 训练指标记录频率
+      eval_log_freq: 1            # 评估指标记录频率
+      perf_log_freq: 200          # 性能指标记录频率
+      gpu_log_freq: 400           # GPU监控频率
+      flops_profile_freq: 200     # MFU计算频率
+      local_save_freq: 2000       # 本地日志保存频率
+      progress_update_freq: 50    # 进度更新频率
+  ```
+  
+  ## 各频率说明
+  
+  | 频率类型 | 说明 | 推荐值 |
+  |----------|------|--------|
+  | training_log_freq | 训练指标记录频率 | 10-200 |
+  | eval_log_freq | 评估指标记录频率 | 1（固定） |
+  | perf_log_freq | 性能指标记录频率 | 20-400 |
+  | gpu_log_freq | GPU监控频率 | 50-800 |
+  | flops_profile_freq | MFU计算频率 | 20-400 |
+  | local_save_freq | 本地日志保存频率 | 200-4000 |
+  | progress_update_freq | 进度更新频率 | 10-100 |
+  
+  ## 推荐配置
+  
+  ### 1. 调试环境 (高频率)
+  - 适合：问题排查、性能分析
+  - 特点：记录详细，开销较大
+  
+  ### 2. 开发环境 (中等频率)
+  - 适合：日常开发、模型调优
+  - 特点：记录适中，开销可控
+  
+  ### 3. 生产环境 (低频率)
+  - 适合：长期训练、资源受限
+  - 特点：记录较少，开销最小
+  
+  ## 注意事项
+  
+  1. **eval_log_freq**: 建议保持为1，确保评估指标正常记录
+  2. **flops_profile_freq**: 建议与perf_log_freq保持一致，确保MFU数据同步
+  3. **性能影响**: 频率越高，训练开销越大
+  4. **WandB显示**: 频率太低可能导致WandB中指标显示不连续 

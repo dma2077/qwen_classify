@@ -22,12 +22,15 @@ training:
     save_best_only: true
 
 # 监控配置 - 使用profiler计算MFU
-monitoring:
-  # FLOPs profiling频率 - 每500步使用profiler计算一次MFU
-  flops_profile_freq: 500
-  
-  # 监控频率配置
-  all_freq: 10  # 每10步记录一次基础指标
+monitor:
+  freq:
+    training_log_freq: 100      # 训练指标记录频率
+    eval_log_freq: 1            # 评估指标记录频率
+    perf_log_freq: 200          # 性能指标记录频率
+    gpu_log_freq: 400           # GPU监控频率
+    flops_profile_freq: 200     # MFU计算频率 (使用profiler)
+    local_save_freq: 2000       # 本地日志保存频率
+    progress_update_freq: 50    # 进度更新频率
 
 # 数据集配置
 datasets:

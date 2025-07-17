@@ -497,34 +497,40 @@ class TrainingMonitor:
         print(f"📊 TrainingMonitor初始化: batch_size={self.batch_size}, flops_profile_freq={self.flops_profile_freq}")
     
     def _init_monitor_frequencies(self):
-        """初始化监控频率配置 - 修复版本，确保指标能正常显示"""
+        """初始化监控频率配置 - 所有频率独立设置"""
         # 从config中获取monitor频率配置
         monitor_config = self.config.get('monitor', {})
         freq_config = monitor_config.get('freq', {})
         
-        # 🔥 修复：降低默认频率，确保指标能正常显示
-        # 如果没有配置，使用更低的默认值，确保指标能被记录
-        all_freq = freq_config.get('all_freq', 10)  # 从100改为10
-        
-        # 基于all_freq计算所有频率，但设置合理的上限
+        # 🔥 所有频率都从monitor.freq中独立设置
         self.freq = {
-            'training_log_freq': min(all_freq, 10),           # 训练指标：最多每10步
-            'perf_log_freq': min(all_freq * 2, 20),           # 性能指标：最多每20步
-            'gpu_log_freq': min(all_freq * 4, 50),            # GPU监控：最多每50步
-            'flops_profile_freq': min(all_freq * 2, 20),      # FLOPs测量：最多每20步
-            'local_save_freq': min(all_freq * 20, 200),       # 本地保存：最多每200步
-            'progress_update_freq': max(all_freq // 5, 1),    # 进度更新：至少每1步
-            'eval_log_freq': 1,  # 评估时每步都记录
+            'training_log_freq': freq_config.get('training_log_freq', 10),           # 训练指标记录频率
+            'perf_log_freq': freq_config.get('perf_log_freq', 20),                   # 性能指标记录频率
+            'gpu_log_freq': freq_config.get('gpu_log_freq', 50),                     # GPU监控频率
+            'local_save_freq': freq_config.get('local_save_freq', 200),              # 本地保存频率
+            'progress_update_freq': freq_config.get('progress_update_freq', 10),     # 进度更新频率
+            'eval_log_freq': freq_config.get('eval_log_freq', 1),                    # 评估指标记录频率
         }
         
+        # flops_profile_freq独立配置
+        if hasattr(self, 'flops_profile_freq'):
+            # 构造函数已经设置了flops_profile_freq，保持不变
+            pass
+        else:
+            # 从配置中获取flops_profile_freq，如果没有则使用默认值
+            self.flops_profile_freq = freq_config.get('flops_profile_freq', 500)
+        
         # 打印监控频率配置
-        print(f"🔧 监控频率配置 (all_freq={all_freq}):")
+        print(f"🔧 监控频率配置:")
         for key, value in self.freq.items():
             print(f"   {key}: 每{value}步")
+        print(f"   flops_profile_freq: 每{self.flops_profile_freq}步")
         
-        # 🔥 额外提示：如果频率太高，建议调整
-        if all_freq > 50:
-            print(f"⚠️  建议：all_freq={all_freq}可能太高，建议设置为1-20以确保指标正常显示")
+        # 检查频率设置是否合理
+        if self.freq['training_log_freq'] > 100:
+            print(f"⚠️  建议：training_log_freq={self.freq['training_log_freq']}可能太高，建议设置为1-50以确保指标正常显示")
+        if self.freq['perf_log_freq'] > 200:
+            print(f"⚠️  建议：perf_log_freq={self.freq['perf_log_freq']}可能太高，建议设置为10-100以确保性能指标正常显示")
     
     def _get_effective_batch_size(self, config: Dict) -> int:
         """正确获取有效的batch size"""
