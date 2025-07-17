@@ -500,29 +500,35 @@ class DeepSpeedTrainer:
             self.dist_ctx.print_main(f"✅ 正确样本:   {overall_correct:,}")
             self.dist_ctx.print_main("=" * 80)
             
-            # 记录到WandB - 🔥 修复：只使用一次记录，避免step冲突
-            try:
-                # 将基础eval指标合并到详细指标中，一次性记录
-                eval_log_data.update({
-                    "eval/overall_loss": overall_loss,
-                    "eval/overall_accuracy": overall_accuracy,
-                })
-                
-                # 一次性记录所有eval指标，避免step冲突
-                self.monitor.log_metrics(eval_log_data, current_step, commit=True)
-                self.dist_ctx.print_main(f"✅ 评估指标已记录到WandB (包含{len(eval_log_data)}个指标)")
-            except Exception as wandb_error:
-                self.dist_ctx.print_main(f"⚠️  WandB记录失败: {wandb_error}")
+            # 记录到WandB - 🔥 修复：只在step不为None时记录，避免重复记录
+            if current_step is not None:
+                try:
+                    # 将基础eval指标合并到详细指标中，一次性记录
+                    eval_log_data.update({
+                        "eval/overall_loss": overall_loss,
+                        "eval/overall_accuracy": overall_accuracy,
+                    })
+                    
+                    # 一次性记录所有eval指标，避免step冲突
+                    self.monitor.log_metrics(eval_log_data, current_step, commit=True)
+                    self.dist_ctx.print_main(f"✅ 评估指标已记录到WandB (包含{len(eval_log_data)}个指标)")
+                except Exception as wandb_error:
+                    self.dist_ctx.print_main(f"⚠️  WandB记录失败: {wandb_error}")
+            else:
+                self.dist_ctx.print_main(f"📊 评估完成但未记录到WandB (将由调用方合并记录)")
             
-            # 更新最佳模型
-            try:
-                eval_results_for_best = {
-                    'overall_loss': overall_loss,
-                    'overall_accuracy': overall_accuracy
-                }
-                self._update_best_model(eval_results_for_best, current_step)
-            except Exception as best_model_error:
-                self.dist_ctx.print_main(f"⚠️  最佳模型更新失败: {best_model_error}")
+            # 更新最佳模型 - 只在step不为None时更新
+            if current_step is not None:
+                try:
+                    eval_results_for_best = {
+                        'overall_loss': overall_loss,
+                        'overall_accuracy': overall_accuracy
+                    }
+                    self._update_best_model(eval_results_for_best, current_step)
+                except Exception as best_model_error:
+                    self.dist_ctx.print_main(f"⚠️  最佳模型更新失败: {best_model_error}")
+            else:
+                self.dist_ctx.print_main(f"📊 跳过最佳模型更新 (step=None)")
             
             # 返回整体指标
             self.dist_ctx.print_main(f"✅ 评估结束 - 验证损失: {overall_loss:.4f}, 准确率: {overall_accuracy:.4f}")
@@ -790,9 +796,12 @@ class DeepSpeedTrainer:
                             'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
                         })
                     
-                    # 优化监控记录 - 仅在必要时传递real_time_flops
-                    step_real_time_flops = real_time_flops if should_measure_flops and real_time_flops is not None else None
-                    self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, step_real_time_flops)
+                    # 🔥 关键修复：只在非eval步骤记录training数据，避免重复记录
+                    is_eval_step = (effective_step % eval_steps == 0)
+                    if not is_eval_step:
+                        # 优化监控记录 - 仅在必要时传递real_time_flops
+                        step_real_time_flops = real_time_flops if should_measure_flops and real_time_flops is not None else None
+                        self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, step_real_time_flops)
                 
                     # 详细日志记录（基于有效步数判断输出频率）
                     if effective_step % logging_steps == 0:
@@ -835,8 +844,35 @@ class DeepSpeedTrainer:
                         
                         # 添加评估异常处理，避免NCCL超时导致训练中断
                         try:
-                            eval_loss, eval_accuracy = self.evaluate(step=effective_step)
-                            # 注意：评估结果已经在evaluate方法中记录到wandb了，无需重复记录
+                            # 🔥 关键修复：获取eval数据但不让evaluate方法记录到wandb
+                            eval_loss, eval_accuracy = self.evaluate(step=None)  # 传入None避免在evaluate中记录
+                            
+                            # 🔥 获取当前训练数据，与eval数据合并记录
+                            current_training_data = {
+                                "training/loss": float(aggregated_loss),
+                                "training/lr": float(current_lr), 
+                                "training/epoch": float(epoch),
+                                "training/grad_norm": float(grad_norm_value),
+                            }
+                            
+                            # 准备eval数据
+                            eval_data = {
+                                "eval/overall_loss": float(eval_loss),
+                                "eval/overall_accuracy": float(eval_accuracy),
+                            }
+                            
+                            # 🔥 合并training和eval数据，一次性记录
+                            combined_data = {**current_training_data, **eval_data}
+                            combined_data["step"] = int(effective_step)
+                            
+                            # 一次性记录所有数据
+                            self.monitor.log_metrics(combined_data, effective_step, commit=True)
+                            
+                            if self.dist_ctx.is_main_process:
+                                print(f"✅ 训练+评估指标已合并记录到WandB (step={effective_step})")
+                                print(f"   训练指标: {list(current_training_data.keys())}")
+                                print(f"   评估指标: {list(eval_data.keys())}")
+                            
                         except Exception as eval_error:
                             if self.dist_ctx.is_main_process:
                                 print(f"⚠️  评估过程出错: {eval_error}")
@@ -844,9 +880,12 @@ class DeepSpeedTrainer:
                             # 记录一个占位符的eval结果，避免wandb图表中断
                             try:
                                 placeholder_eval_data = {
+                                    "training/loss": float(aggregated_loss),
+                                    "training/lr": float(current_lr),
                                     "eval/overall_loss": 999.0,  # 使用明显的占位符值
                                     "eval/overall_accuracy": 0.0,
                                     "eval/evaluation_failed": 1.0,  # 标记评估失败
+                                    "step": int(effective_step)
                                 }
                                 self.monitor.log_metrics(placeholder_eval_data, effective_step)
                             except:

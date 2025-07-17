@@ -644,12 +644,13 @@ class TrainingMonitor:
             if wandb.run is None:
                 return
             
-            # 🔥 关键修复：强制所有指标使用统一的x轴
-            # 定义step作为所有指标的x轴
+            # 🔥 关键修复：分别定义training和eval指标，使用统一的x轴
             wandb.define_metric("step")
-            wandb.define_metric("*", step_metric="step")
+            wandb.define_metric("training/*", step_metric="step")
+            wandb.define_metric("eval/*", step_metric="step")
+            wandb.define_metric("perf/*", step_metric="step")
             
-            print("✅ 已定义统一x轴：所有指标使用'step'")
+            print("✅ 已定义统一x轴：training/*, eval/*, perf/* 指标使用'step'")
             
         except Exception as e:
             print(f"⚠️  定义eval指标失败: {e}")
