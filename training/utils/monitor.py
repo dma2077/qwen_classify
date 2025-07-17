@@ -676,11 +676,10 @@ class TrainingMonitor:
                 return
             
             # 🔥 强制创建eval指标，确保WandB识别这些指标组
-            # 使用一个很大的step值，避免与实际训练step冲突
-            init_step = 999999
-            initial_eval_data = {
-                "eval/overall_loss": float('nan'),  # 使用NaN避免影响图表缩放
-                "eval/overall_accuracy": float('nan'),
+            # 使用step 0先记录一次，立即commit，确保eval组图表创建
+            step_0_eval_data = {
+                "eval/overall_loss": 999.0,  # 使用明显的初始值，后续真实数据会覆盖
+                "eval/overall_accuracy": 0.0,
                 "eval/overall_samples": 0,
                 "eval/overall_correct": 0,
             }
@@ -688,12 +687,13 @@ class TrainingMonitor:
             # 如果有多数据集配置，也创建对应的指标
             dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
             for dataset_name in dataset_configs.keys():
-                initial_eval_data[f"eval/{dataset_name}_loss"] = float('nan')
-                initial_eval_data[f"eval/{dataset_name}_accuracy"] = float('nan')
-                initial_eval_data[f"eval/{dataset_name}_samples"] = 0
+                step_0_eval_data[f"eval/{dataset_name}_loss"] = 999.0
+                step_0_eval_data[f"eval/{dataset_name}_accuracy"] = 0.0
+                step_0_eval_data[f"eval/{dataset_name}_samples"] = 0
             
-            wandb.log(initial_eval_data, step=init_step, commit=False)
-            print(f"📊 eval图表已强制初始化 (step={init_step})")
+            # 立即记录到step 0，确保图表创建
+            wandb.log(step_0_eval_data, step=0, commit=True)
+            print(f"📊 eval图表已强制初始化 (step=0) - 指标: {list(step_0_eval_data.keys())}")
             
         except Exception as e:
             print(f"⚠️  创建eval图表失败: {e}")
@@ -1026,8 +1026,11 @@ class TrainingMonitor:
                 
                 # 🔥 额外验证：检查WandB run状态
                 if wandb.run is not None:
-                    print(f"   WandB run状态: {wandb.run._get_status()}")
+                    # 使用兼容的状态检查方法
+                    run_state = getattr(wandb.run, 'state', 'unknown')
+                    print(f"   WandB run状态: {run_state}")
                     print(f"   WandB项目: {wandb.run.project}")
+                    print(f"   WandB run ID: {wandb.run.id}")
                     print(f"   实际记录的数据keys: {list(log_data.keys())}")
                 else:
                     print("   ⚠️ WandB run为None！")
