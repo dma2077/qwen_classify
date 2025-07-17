@@ -295,22 +295,17 @@ class DeepSpeedTrainer:
             # 准备eval数据
             eval_data = self._build_eval_metrics(eval_loss, eval_accuracy, eval_results)
             
-            # 合并training和eval数据，一次性记录
-            combined_data = {**current_training_data, **eval_data}
-            combined_data["step"] = int(effective_step)
-            
-            # 确保所有指标都有正确的分组前缀
-            combined_data["_wandb"] = {
-                "training_metrics": list(current_training_data.keys()),
-                "eval_metrics": list(eval_data.keys()),
-                "combined_step": effective_step
-            }
-            
-            # 一次性记录所有数据
-            self.monitor.log_metrics(combined_data, effective_step, commit=True)
-            
+            # 🔥 修复：分别记录training和eval指标，避免步骤冲突
+            # 先记录training指标
             if self.dist_ctx.is_main_process:
-                print(f"✅ 训练+评估指标已合并记录到WandB (step={effective_step})")
+                self.monitor.log_metrics(current_training_data, effective_step, commit=False)
+                print(f"✅ 训练指标已记录到WandB (step={effective_step})")
+            
+            # 再记录eval指标（使用相同的step，但commit=True）
+            if self.dist_ctx.is_main_process:
+                self.monitor.log_metrics(eval_data, effective_step, commit=True)
+                print(f"✅ 评估指标已记录到WandB (step={effective_step})")
+                print(f"   评估指标: {list(eval_data.keys())}")
                 
         except Exception as eval_error:
             if self.dist_ctx.is_main_process:
