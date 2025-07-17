@@ -304,8 +304,11 @@ class DeepSpeedTrainer:
             # 再记录eval指标（使用相同的step，但commit=True）
             if self.dist_ctx.is_main_process:
                 self.monitor.log_metrics(eval_data, effective_step, commit=True)
+                eval_metrics_list = [k for k in eval_data.keys() if k.startswith('eval/')]
                 print(f"✅ 评估指标已记录到WandB (step={effective_step})")
-                print(f"   评估指标: {list(eval_data.keys())}")
+                print(f"   📊 记录的eval指标: {eval_metrics_list}")
+                print(f"   📈 整体准确率: {eval_accuracy:.4f}")
+                print(f"   📉 整体损失: {eval_loss:.6f}")
                 
         except Exception as eval_error:
             if self.dist_ctx.is_main_process:
@@ -320,11 +323,19 @@ class DeepSpeedTrainer:
             self.pbar.refresh()
             
     def _build_eval_metrics(self, eval_loss, eval_accuracy, eval_results):
-        """构建评估指标"""
+        """构建评估指标 - 确保包含所有必要的eval指标"""
         eval_data = {
             "eval/overall_loss": float(eval_loss),
             "eval/overall_accuracy": float(eval_accuracy),
         }
+        
+        # 添加整体样本数和正确数（如果eval_results中有）
+        if eval_results:
+            overall_samples = eval_results.get('total_samples', 0)
+            overall_correct = eval_results.get('total_correct', 0)
+            if overall_samples > 0:
+                eval_data["eval/overall_samples"] = int(overall_samples)
+                eval_data["eval/overall_correct"] = int(overall_correct)
         
         # 添加每个数据集的详细指标（如果存在）
         if eval_results and 'dataset_metrics' in eval_results and eval_results['dataset_metrics']:
@@ -928,20 +939,27 @@ class DeepSpeedTrainer:
             self.dist_ctx.print_main(f"✅ 正确样本:   {overall_correct:,}")
             self.dist_ctx.print_main("=" * 80)
             
-            # 记录到WandB - 🔥 修复：根据log_to_wandb参数决定是否记录
+            # 记录到WandB - 🔥 修复：确保eval指标正确记录
             if current_step is not None and log_to_wandb:
                 try:
-                    # 将基础eval指标合并到详细指标中，一次性记录
-                    eval_log_data.update({
-                        "eval/overall_loss": overall_loss,
-                        "eval/overall_accuracy": overall_accuracy,
-                    })
+                    # 确保所有eval指标都有正确的step字段
+                    eval_log_data_with_step = eval_log_data.copy()
+                    eval_log_data_with_step["step"] = current_step
                     
                     # 一次性记录所有eval指标，避免step冲突
                     self.monitor.log_metrics(eval_log_data, current_step, commit=True)
-                    self.dist_ctx.print_main(f"✅ 评估指标已记录到WandB (包含{len(eval_log_data)}个指标)")
+                    
+                    # 输出详细的记录信息
+                    eval_metrics_list = [k for k in eval_log_data.keys() if k.startswith('eval/')]
+                    self.dist_ctx.print_main(f"✅ 评估指标已记录到WandB (step={current_step})")
+                    self.dist_ctx.print_main(f"   📊 记录的eval指标: {eval_metrics_list}")
+                    self.dist_ctx.print_main(f"   📈 整体准确率: {overall_accuracy:.4f}")
+                    self.dist_ctx.print_main(f"   📉 整体损失: {overall_loss:.6f}")
+                    
                 except Exception as wandb_error:
                     self.dist_ctx.print_main(f"⚠️  WandB记录失败: {wandb_error}")
+                    import traceback
+                    traceback.print_exc()
             elif current_step is not None and not log_to_wandb:
                 # 静默模式，不输出额外信息
                 pass

@@ -724,11 +724,24 @@ class TrainingMonitor:
             wandb.define_metric("training/epoch", step_metric="step", summary="last")
             wandb.define_metric("training/grad_norm", step_metric="step", summary="last")
             
-            # 定义评估指标组
+            # 定义评估指标组 - 🔥 确保所有eval指标都被定义
             wandb.define_metric("eval/overall_loss", step_metric="step", summary="min")
             wandb.define_metric("eval/overall_accuracy", step_metric="step", summary="max")
             wandb.define_metric("eval/overall_samples", step_metric="step", summary="last")
             wandb.define_metric("eval/overall_correct", step_metric="step", summary="last")
+            
+            # 定义数据集特定的eval指标
+            dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
+            for dataset_name in dataset_configs.keys():
+                wandb.define_metric(f"eval/{dataset_name}_loss", step_metric="step", summary="min")
+                wandb.define_metric(f"eval/{dataset_name}_accuracy", step_metric="step", summary="max")
+                wandb.define_metric(f"eval/{dataset_name}_samples", step_metric="step", summary="last")
+            
+            # 定义最终评估指标
+            wandb.define_metric("eval/final_overall_loss", step_metric="step", summary="min")
+            wandb.define_metric("eval/final_overall_accuracy", step_metric="step", summary="max")
+            wandb.define_metric("eval/final_overall_samples", step_metric="step", summary="last")
+            wandb.define_metric("eval/final_overall_correct", step_metric="step", summary="last")
             
             # 定义性能指标组
             wandb.define_metric("perf/step_time", step_metric="step", summary="mean")
@@ -747,9 +760,14 @@ class TrainingMonitor:
             wandb.define_metric("perf/*", step_metric="step")
             
             print("✅ 已定义详细指标分组：training/*, eval/*, perf/* 指标使用统一的'step'轴")
+            print(f"   📊 已定义的具体eval指标: overall_loss, overall_accuracy, overall_samples, overall_correct")
+            if dataset_configs:
+                print(f"   📂 已定义的数据集eval指标: {list(dataset_configs.keys())}")
             
         except Exception as e:
             print(f"⚠️  定义eval指标失败: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _create_eval_charts(self):
         """强制确保eval图表在wandb界面中可见"""
@@ -1156,6 +1174,13 @@ class TrainingMonitor:
                         print(f"   ⚠️ 强制提交失败: {flush_error}")
                 else:
                     print("   ⚠️ WandB run为None！")
+                
+                # 🔥 新增：强制同步到WandB服务器
+                try:
+                    wandb.sync()
+                    print(f"   ✅ WandB同步完成")
+                except Exception as sync_error:
+                    print(f"   ⚠️ WandB同步失败: {sync_error}")
             
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")
