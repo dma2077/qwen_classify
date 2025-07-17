@@ -25,7 +25,7 @@ def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
     show_progress = not is_distributed or current_rank == 0
     eval_pbar = tqdm(val_loader, desc="Evaluating", leave=False, disable=not show_progress)
     
-    batch_count = 0  # 用于计算平均损失
+    batch_count = 0
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(eval_pbar):
@@ -132,15 +132,6 @@ def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
 def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> Dict:
     """
     多数据集评估函数，支持按数据集分别统计指标
-    
-    Args:
-        model: 模型
-        val_loader: 验证数据加载器
-        device: 设备
-        dataset_configs: 数据集配置字典
-        
-    Returns:
-        evaluation results dictionary containing overall and per-dataset metrics
     """
     import torch.distributed as dist
     
@@ -254,64 +245,48 @@ def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> D
     
     # 在分布式环境下聚合结果
     if is_distributed:
-        try:
+        # 聚合整体统计
+        total_loss_tensor = torch.tensor(total_loss, dtype=torch.float32, device=device)
+        correct_tensor = torch.tensor(correct, dtype=torch.long, device=device) 
+        total_tensor = torch.tensor(total, dtype=torch.long, device=device)
+        batch_count_tensor = torch.tensor(batch_count, dtype=torch.long, device=device)
+        
+        overall_tensors = [total_loss_tensor, correct_tensor, total_tensor, batch_count_tensor]
+        
+        if batch_all_reduce(overall_tensors, op=dist.ReduceOp.SUM):
+            # 使用聚合后的结果
+            total_loss = total_loss_tensor.item()
+            correct = correct_tensor.item()
+            total = total_tensor.item()
+            batch_count = batch_count_tensor.item()
+        else:
             if show_progress:
-                print(f"🔄 开始分布式评估结果聚合 (world_size={world_size})...")
-            
-            # 聚合整体统计 - 使用批量操作
-            total_loss_tensor = torch.tensor(total_loss, dtype=torch.float32, device=device)
-            correct_tensor = torch.tensor(correct, dtype=torch.long, device=device) 
-            total_tensor = torch.tensor(total, dtype=torch.long, device=device)
-            batch_count_tensor = torch.tensor(batch_count, dtype=torch.long, device=device)
-            
-            overall_tensors = [total_loss_tensor, correct_tensor, total_tensor, batch_count_tensor]
-            
-            if batch_all_reduce(overall_tensors, op=dist.ReduceOp.SUM):
-                # 使用聚合后的结果
-                total_loss = total_loss_tensor.item()
-                correct = correct_tensor.item()
-                total = total_tensor.item()
-                batch_count = batch_count_tensor.item()
+                print("⚠️  整体统计聚合失败，使用本地结果")
+        
+        # 聚合数据集特定统计
+        if dataset_stats:
+            aggregated_dataset_stats = {}
+            for dataset_name, stats in dataset_stats.items():
+                # 创建tensor并尝试聚合
+                dataset_tensors = [
+                    torch.tensor(stats['total_loss'], dtype=torch.float32, device=device),
+                    torch.tensor(stats['correct'], dtype=torch.long, device=device),
+                    torch.tensor(stats['total'], dtype=torch.long, device=device),
+                    torch.tensor(stats['batch_count'], dtype=torch.long, device=device)
+                ]
                 
-                if show_progress:
-                    print("✅ 整体统计聚合完成")
-            else:
-                if show_progress:
-                    print("⚠️  整体统计聚合失败，使用本地结果")
+                if batch_all_reduce(dataset_tensors, op=dist.ReduceOp.SUM):
+                    aggregated_dataset_stats[dataset_name] = {
+                        'total_loss': dataset_tensors[0].item(),
+                        'correct': dataset_tensors[1].item(),
+                        'total': dataset_tensors[2].item(),
+                        'batch_count': dataset_tensors[3].item()
+                    }
+                else:
+                    # 聚合失败，使用本地统计
+                    aggregated_dataset_stats[dataset_name] = stats
             
-            # 聚合数据集特定统计 - 简化处理
-            if dataset_stats and show_progress:
-                aggregated_dataset_stats = {}
-                for dataset_name, stats in dataset_stats.items():
-                    # 创建tensor并尝试聚合
-                    dataset_tensors = [
-                        torch.tensor(stats['total_loss'], dtype=torch.float32, device=device),
-                        torch.tensor(stats['correct'], dtype=torch.long, device=device),
-                        torch.tensor(stats['total'], dtype=torch.long, device=device),
-                        torch.tensor(stats['batch_count'], dtype=torch.long, device=device)
-                    ]
-                    
-                    if batch_all_reduce(dataset_tensors, op=dist.ReduceOp.SUM):
-                        aggregated_dataset_stats[dataset_name] = {
-                            'total_loss': dataset_tensors[0].item(),
-                            'correct': dataset_tensors[1].item(),
-                            'total': dataset_tensors[2].item(),
-                            'batch_count': dataset_tensors[3].item()
-                        }
-                    else:
-                        # 聚合失败，使用本地统计
-                        aggregated_dataset_stats[dataset_name] = stats
-                
-                dataset_stats = aggregated_dataset_stats
-                
-            if show_progress:
-                print("✅ 分布式评估结果聚合完成")
-                
-        except Exception as e:
-            if show_progress:
-                print(f"❌ 分布式聚合过程出错: {e}")
-                print("⚠️  将使用本地评估结果")
-            # 继续使用本地结果
+            dataset_stats = aggregated_dataset_stats
     
     # 计算结果
     overall_avg_loss = total_loss / batch_count if batch_count > 0 else 0

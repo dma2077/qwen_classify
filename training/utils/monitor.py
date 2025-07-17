@@ -13,6 +13,9 @@ except ImportError:
     WANDB_AVAILABLE = False
     print("Warning: wandb not installed. pip install wandb to enable logging.")
 
+# 全局缓存GPU峰值性能，避免重复识别
+_GPU_PEAK_FLOPS_CACHE = None
+
 def make_json_serializable(obj):
     """确保对象可以JSON序列化"""
     if isinstance(obj, torch.Tensor):
@@ -38,10 +41,17 @@ def make_json_serializable(obj):
         return obj
 
 def get_gpu_peak_flops():
-    """获取GPU峰值FLOPs性能"""
+    """获取GPU峰值FLOPs性能 - 优化版本，仅首次识别"""
+    global _GPU_PEAK_FLOPS_CACHE
+    
+    # 如果已经缓存，直接返回
+    if _GPU_PEAK_FLOPS_CACHE is not None:
+        return _GPU_PEAK_FLOPS_CACHE
+    
     try:
         if not torch.cuda.is_available():
-            return 312e12  # 默认值
+            _GPU_PEAK_FLOPS_CACHE = 312e12  # 默认值
+            return _GPU_PEAK_FLOPS_CACHE
         
         # 获取GPU名称
         gpu_name = torch.cuda.get_device_name(0).upper()
@@ -82,19 +92,20 @@ def get_gpu_peak_flops():
         # 查找匹配的GPU
         for gpu_model, peak_flops in gpu_peak_flops.items():
             if gpu_model in gpu_name:
-                # 只在第一次识别时打印（避免频繁输出）
-                if not hasattr(get_gpu_peak_flops, '_gpu_identified'):
-                    print(f"✅ 识别GPU: {gpu_name} -> {gpu_model} ({peak_flops/1e12:.0f} TFLOPs)")
-                    get_gpu_peak_flops._gpu_identified = True
-                return peak_flops
+                # 仅首次识别时打印
+                print(f"✅ 识别GPU: {gpu_name} -> {gpu_model} ({peak_flops/1e12:.0f} TFLOPs)")
+                _GPU_PEAK_FLOPS_CACHE = peak_flops
+                return _GPU_PEAK_FLOPS_CACHE
         
         # 如果没有找到匹配的GPU，使用默认值
-        print(f"未识别的GPU类型: {gpu_name}，使用默认峰值性能 (A100: 312 TFLOPs)")
-        return 312e12  # 默认使用A100的性能
+        print(f"⚠️  未识别的GPU类型: {gpu_name}，使用默认峰值性能 (A100: 312 TFLOPs)")
+        _GPU_PEAK_FLOPS_CACHE = 312e12
+        return _GPU_PEAK_FLOPS_CACHE
         
     except Exception as e:
         print(f"获取GPU峰值性能错误: {e}")
-        return 312e12  # 默认值
+        _GPU_PEAK_FLOPS_CACHE = 312e12  # 默认值
+        return _GPU_PEAK_FLOPS_CACHE
 
 def calculate_mfu(model, batch_size: int, seq_length: int, step_time: float, actual_flops: float = None) -> float:
     """计算MFU (Model FLOPs Utilization)
@@ -577,50 +588,26 @@ class TrainingMonitor:
             print(f"⚠️  创建eval图表失败: {e}")
     
     def _create_detailed_charts(self):
-        """创建详细的训练和评估指标图表"""
+        """创建详细的训练和评估指标图表 - 优化版本，不记录初始数据"""
         try:
             if not self.use_wandb or not self._is_main_process():
                 return
             
-            import wandb
-            
-            # 简化方法：只记录初始数据点，让wandb自动创建时间序列图表
-            # 这样比自定义图表更可靠，数据会自动更新
-            
-            # 记录初始训练指标
-            wandb.log({
-                "training/loss": 0.0,
-                "training/lr": 1e-5,
-                "training/grad_norm": 1.0,
-                "training/epoch": 0.0,
-                "global_step": 0
-            }, commit=True)
-            
-            # 记录初始性能指标
-            wandb.log({
-                "perf/mfu": 0.0,
-                "perf/step_time": 1.0,
-                "perf/tokens_per_second": 0.0,
-                "global_step": 0
-            }, commit=True)
-            
-            print("✅ 基础图表框架已创建，wandb将自动生成时间序列图表")
+            # 移除初始数据记录，避免step=0的问题
+            # wandb会在第一次真实数据记录时自动创建图表
+            print("✅ 图表将在实际数据记录时自动创建")
             
         except Exception as e:
-            print(f"创建基础图表失败: {e}")
+            print(f"图表准备失败: {e}")
 
     def _ensure_eval_charts_visible(self):
-        """确保eval图表在wandb界面中可见"""
+        """确保eval图表在wandb界面中可见 - 优化版本，减少额外记录"""
         try:
             if not self.use_wandb or not self._is_main_process():
                 return
             
-            import wandb
-            
-            # 记录一个特殊的标记，确保eval指标被wandb识别
-            wandb.log({"eval/chart_visibility_check": 1.0}, commit=True)
-            
-            print("✅ eval图表可见性已确保")
+            # 移除额外的chart_visibility_check记录，避免step冲突
+            print("✅ eval图表将在第一次评估时自动显示")
             
         except Exception as e:
             print(f"⚠️  确保eval图表可见性失败: {e}")
@@ -705,15 +692,15 @@ class TrainingMonitor:
             return self.actual_seq_length if self.actual_seq_length is not None else self.seq_length
     
     def start_training(self):
-        """开始训练"""
+        """开始训练 - 优化版本，减少初始记录"""
         self.start_time = time.time()
         self.step_start_time = time.time()
         
-        if self.use_wandb and self._is_main_process():
-            wandb.log({"training/started": True, "training/start_time": self.start_time}, commit=True)
+        # 移除training/started记录，减少WandB调用
+        print("✅ 训练监控已启动")
     
     def log_step(self, step: int, epoch: int, loss: float, grad_norm: float, learning_rate: float, attention_mask=None, real_time_flops=None):
-        """记录训练步骤 - 优化版本，减少WandB记录开销"""
+        """记录训练步骤 - 最优化版本，大幅减少WandB记录频率"""
         current_time = time.time()
         step_time = current_time - self.step_start_time
         
@@ -737,61 +724,65 @@ class TrainingMonitor:
         
         self.step_logs.append(log_entry)
         
-        # 大幅优化WandB记录频率以提升性能
+        # 大幅减少WandB记录频率以解决step顺序问题
         if self.use_wandb and self._is_main_process():
-            # 基础指标每步记录（轻量级）
-            wandb_data = {
-                "training/loss": float(loss),
-                "training/lr": float(learning_rate),
-                "training/epoch": float(epoch),
-                "global_step": int(step)
-            }
+            # 仅每100步记录一次基础指标（大幅降频）
+            should_log_basic = (step % 100 == 0)
             
-            # 详细指标大幅降低频率：每50步记录一次（而不是10步）
-            should_log_detailed = (step % 50 == 0)
-            
-            if should_log_detailed:
-                # 添加其他训练指标
-                wandb_data.update({
-                    "training/grad_norm": float(grad_norm),
-                    "perf/step_time": float(step_time),
-                })
+            if should_log_basic:
+                # 基础指标记录
+                wandb_data = {
+                    "training/loss": float(loss),
+                    "training/lr": float(learning_rate),
+                    "training/epoch": float(epoch),
+                    "global_step": int(step)
+                }
                 
-                # MFU和FLOP相关指标仅在有FLOPs数据时记录
-                if self.model_ref is not None and self.actual_flops is not None:
-                    # 优先使用当前batch的实际序列长度
-                    if attention_mask is not None:
-                        current_seq_length = self._calculate_actual_seq_length(attention_mask)
-                    elif self.actual_seq_length is not None:
-                        current_seq_length = self.actual_seq_length
-                    else:
-                        current_seq_length = self.seq_length
-                    
-                    # 使用最新的FLOPs值计算MFU
-                    current_flops = real_time_flops if real_time_flops is not None else self.actual_flops
-                    mfu = calculate_mfu(self.model_ref, self.batch_size, current_seq_length, step_time, current_flops)
-                    
+                # 详细指标每200步记录一次（进一步降频）
+                should_log_detailed = (step % 200 == 0)
+                
+                if should_log_detailed:
+                    # 添加其他训练指标
                     wandb_data.update({
-                        "perf/mfu": float(mfu),
-                        "perf/tokens_per_second": float(self.batch_size * current_seq_length / step_time),
-                        "perf/actual_flops": float(current_flops),
-                        "perf/actual_seq_length": float(current_seq_length)
+                        "training/grad_norm": float(grad_norm),
+                        "perf/step_time": float(step_time),
                     })
                     
-                    # 如果有实时FLOPs，标记出来
-                    if real_time_flops is not None:
-                        wandb_data["perf/real_time_measurement"] = 1.0
-                        wandb_data["perf/flops_per_second"] = float(current_flops / step_time)
-                    else:
-                        wandb_data["perf/real_time_measurement"] = 0.0
-            
-            # 一次性记录所有指标，确保commit
-            wandb.log(wandb_data, step=int(step), commit=True)
+                    # MFU和FLOP相关指标仅在有FLOPs数据时记录
+                    if self.model_ref is not None and self.actual_flops is not None:
+                        # 优先使用当前batch的实际序列长度
+                        if attention_mask is not None:
+                            current_seq_length = self._calculate_actual_seq_length(attention_mask)
+                        elif self.actual_seq_length is not None:
+                            current_seq_length = self.actual_seq_length
+                        else:
+                            current_seq_length = self.seq_length
+                        
+                        # 使用最新的FLOPs值计算MFU
+                        current_flops = real_time_flops if real_time_flops is not None else self.actual_flops
+                        mfu = calculate_mfu(self.model_ref, self.batch_size, current_seq_length, step_time, current_flops)
+                        
+                        wandb_data.update({
+                            "perf/mfu": float(mfu),
+                            "perf/tokens_per_second": float(self.batch_size * current_seq_length / step_time),
+                            "perf/actual_flops": float(current_flops),
+                            "perf/actual_seq_length": float(current_seq_length)
+                        })
+                        
+                        # 如果有实时FLOPs，标记出来
+                        if real_time_flops is not None:
+                            wandb_data["perf/real_time_measurement"] = 1.0
+                            wandb_data["perf/flops_per_second"] = float(current_flops / step_time)
+                        else:
+                            wandb_data["perf/real_time_measurement"] = 0.0
+                
+                # 一次性记录所有指标，确保commit
+                wandb.log(wandb_data, step=int(step), commit=True)
         
         self.step_start_time = current_time
         
-        # 降低本地日志保存频率：每200步保存一次（而不是100步）
-        if step % 200 == 0:
+        # 降低本地日志保存频率：每500步保存一次（进一步降频）
+        if step % 500 == 0:
             self.save_logs()
     
     def log_epoch(self, epoch: int, avg_loss: float, elapsed_time: float, current_step: int = None):
@@ -848,23 +839,20 @@ class TrainingMonitor:
             print(f"🔗 请访问wandb界面查看eval图表: {wandb.run.url}")
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
-        """通用的指标记录方法"""
+        """通用的指标记录方法 - 优化版本，减少额外调用"""
         # 检查是否是主进程且wandb可用
         if not self.use_wandb or not self._is_main_process():
             return
             
         if not WANDB_AVAILABLE:
-            print(f"⚠️  wandb不可用，跳过指标记录: {list(metrics.keys())}")
             return
 
         # 检查wandb是否已初始化
         try:
             import wandb
             if wandb.run is None:
-                print(f"⚠️  wandb未初始化，跳过指标记录: {list(metrics.keys())}")
                 return
         except Exception as e:
-            print(f"⚠️  wandb检查失败，跳过指标记录: {e}")
             return
 
         try:
@@ -881,47 +869,15 @@ class TrainingMonitor:
             # 检查是否包含eval指标
             has_eval_metrics = any('eval' in key for key in log_data.keys())
             
-            # 添加调试信息
-            if has_eval_metrics:
-                print(f"🔍 log_metrics调试 - 输入指标: {list(metrics.keys())}")
-                print(f"🔍 log_metrics调试 - 处理后指标: {list(log_data.keys())}")
-                print(f"🔍 log_metrics调试 - step={step}, commit={commit}")
-            
-            # 如果是第一次记录eval指标，确保图表可见
-            if has_eval_metrics and not hasattr(self, '_eval_charts_created'):
-                self._ensure_eval_charts_visible()
-                self._eval_charts_created = True
-                
-                # 在第一次eval时，记录一个特殊的标记来确保eval分组在wandb界面中显示
-                try:
-                    wandb.log({"eval/first_eval_marker": 1.0}, step=step, commit=True)
-                    print("📊 已标记第一次eval，eval分组将在wandb界面中显示")
-                except Exception as marker_error:
-                    print(f"⚠️  记录eval标记失败: {marker_error}")
-            
-            # 记录到wandb
+            # 移除冗余的eval标记记录，减少WandB调用
+            # 直接记录主要指标
             if step is not None:
-                print(f"🔍 准备调用wandb.log: step={step}, data={log_data}")
                 wandb.log(log_data, step=int(step), commit=commit)
-                print(f"✅ wandb.log调用完成")
-                
-                # 只为eval指标显示成功信息
-                if has_eval_metrics:
-                    print(f"📊 eval指标已记录到wandb (step={step}): {list(log_data.keys())}")
-                    print(f"🔗 请访问wandb界面查看eval图表: {wandb.run.url}")
             else:
-                print(f"🔍 准备调用wandb.log: data={log_data}")
                 wandb.log(log_data, commit=commit)
-                print(f"✅ wandb.log调用完成")
-                
-                if has_eval_metrics:
-                    print(f"📊 eval指标已记录到wandb: {list(log_data.keys())}")
-                    print(f"🔗 请访问wandb界面查看eval图表: {wandb.run.url}")
                 
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")
-            import traceback
-            traceback.print_exc()
     
     def save_logs(self):
         """保存日志到文件"""
@@ -941,11 +897,13 @@ class TrainingMonitor:
             print(f"保存日志失败: {e}")
     
     def finish_training(self):
-        """结束训练"""
+        """结束训练 - 优化版本，减少WandB调用"""
         if self.use_wandb and self._is_main_process():
-            wandb.log({"training/finished": True, "training/total_time": time.time() - self.start_time}, commit=True)
+            # 简化结束记录，只记录总时间
+            total_time = time.time() - self.start_time if self.start_time else 0
+            wandb.log({"training/total_time": total_time}, commit=True)
             wandb.finish()
-            print("📊 wandb run finished")
+            print(f"📊 训练完成，总耗时: {total_time:.2f}秒")
     
     def get_latest_metrics(self) -> Optional[Dict]:
         """获取最新的训练指标"""

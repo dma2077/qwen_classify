@@ -175,10 +175,22 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
                 # 静默回退到标准损失函数
                 import torch.nn.functional as F
                 loss = F.cross_entropy(logits, labels)
-                
-        return SequenceClassifierOutput(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
+        
+        # 🔥 关键修复：评估时不返回大tensor，避免NCCL超时
+        # 检查是否在评估模式下（通过model.training判断）
+        if not self.training:
+            # 评估模式：只返回必要的loss和logits，不返回hidden_states和attentions
+            return SequenceClassifierOutput(
+                loss=loss,
+                logits=logits,
+                hidden_states=None,  # 评估时不返回，避免4.67亿元素的NCCL reduce
+                attentions=None,     # 评估时不返回，节省内存和通信带宽
+            )
+        else:
+            # 训练模式：返回完整的输出（如果需要用于其他目的）
+            return SequenceClassifierOutput(
+                loss=loss,
+                logits=logits,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+            )

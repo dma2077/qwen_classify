@@ -323,8 +323,13 @@ class DeepSpeedTrainer:
                 metrics['correct_samples'] += 1
     
     def _log_dataset_metrics(self, step, is_eval=False):
-        """记录各数据集的指标"""
+        """记录各数据集的指标 - 优化版本，减少WandB记录频率"""
         if not self.enable_dataset_metrics or not self.dataset_metrics:
+            return
+        
+        # 大幅降低数据集指标记录频率，避免WandB step冲突
+        should_log_dataset = (step % 200 == 0)  # 每200步记录一次
+        if not should_log_dataset:
             return
             
         # 计算并输出各数据集的指标
@@ -350,8 +355,8 @@ class DeepSpeedTrainer:
             overall_samples += metrics['total_samples']
             overall_correct += metrics['correct_samples']
             
-            # 只在主进程输出详细信息
-            if self.dist_ctx.is_main_process:
+            # 只在主进程输出详细信息（降低输出频率）
+            if self.dist_ctx.is_main_process and (step % 500 == 0):  # 每500步输出一次
                 prefix = "EVAL" if is_eval else "TRAIN"
                 print(f"📊 {prefix} - {dataset_name}: "
                       f"Loss={avg_loss:.4f}, Acc={accuracy:.4f} ({accuracy*100:.2f}%), "
@@ -364,13 +369,13 @@ class DeepSpeedTrainer:
             dataset_log_data[f"{metric_group}/overall_samples"] = overall_samples
             dataset_log_data[f"{metric_group}/overall_correct"] = overall_correct
             
-            if self.dist_ctx.is_main_process:
+            if self.dist_ctx.is_main_process and (step % 500 == 0):  # 每500步输出一次
                 prefix = "EVAL" if is_eval else "TRAIN"
                 print(f"📊 {prefix} - OVERALL: "
                       f"Acc={overall_accuracy:.4f} ({overall_accuracy*100:.2f}%), "
                       f"Samples={overall_samples}")
         
-        # 记录到wandb
+        # 记录到wandb时使用commit=False，避免step冲突
         if dataset_log_data:
             self.monitor.log_metrics(dataset_log_data, step, commit=False)
             
@@ -430,93 +435,97 @@ class DeepSpeedTrainer:
         Args:
             step: 当前步数，如果提供则用于最佳模型保存；否则使用self.current_step
         """
-        self.dist_ctx.print_main("🔍 开始评估...")
-        
-        # 统一使用多数据集评估函数
-        eval_results = evaluate_multi_dataset(self.model, self.val_loader, self.dist_ctx.device, self.dataset_configs)
-        
-        # 添加调试信息
-        self.dist_ctx.print_main(f"🔍 eval_results 原始数据: {eval_results}")
-        
-        # 准备wandb记录数据
-        eval_log_data = {}
-        overall_samples = 0
-        overall_correct = 0
-        
-        # 处理数据集指标（如果存在）
-        if eval_results and 'dataset_metrics' in eval_results and eval_results['dataset_metrics']:
-            self.dist_ctx.print_main(f"📊 检测到多数据集评估结果:")
-            # 多数据集情况：记录每个数据集的指标
-            for dataset_name, metrics in eval_results['dataset_metrics'].items():
-                eval_log_data[f"eval/{dataset_name}_loss"] = metrics['loss']
-                eval_log_data[f"eval/{dataset_name}_accuracy"] = metrics['accuracy']
-                eval_log_data[f"eval/{dataset_name}_samples"] = metrics['samples']
-                
-                overall_samples += metrics['samples']
-                overall_correct += metrics['correct']
-                
-                # 打印每个数据集的详细结果
-                self.dist_ctx.print_main(f"  📂 {dataset_name}:")
-                self.dist_ctx.print_main(f"     Loss: {metrics['loss']:.6f}")
-                self.dist_ctx.print_main(f"     Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
-                self.dist_ctx.print_main(f"     Samples: {metrics['samples']:,} (Correct: {metrics['correct']:,})")
-        else:
-            self.dist_ctx.print_main(f"📊 检测到单数据集评估结果:")
-            # 单数据集情况：使用overall指标作为主要指标
-            eval_log_data["eval/loss"] = eval_results.get('overall_loss', 0)
-            eval_log_data["eval/accuracy"] = eval_results.get('overall_accuracy', 0)
-            overall_samples = eval_results.get('total_samples', 0)
-            overall_correct = eval_results.get('total_correct', 0)
-            
-            self.dist_ctx.print_main(f"  📈 Loss: {eval_results.get('overall_loss', 0):.6f}")
-            self.dist_ctx.print_main(f"  🎯 Accuracy: {eval_results.get('overall_accuracy', 0):.4f} ({eval_results.get('overall_accuracy', 0)*100:.2f}%)")
-            self.dist_ctx.print_main(f"  📊 Samples: {overall_samples:,} (Correct: {overall_correct:,})")
-        
-        # 添加整体指标（适用于单数据集和多数据集）
-        if overall_samples > 0:
-            overall_accuracy = overall_correct / overall_samples
-        else:
-            overall_accuracy = eval_results.get('overall_accuracy', 0)
-            overall_samples = eval_results.get('total_samples', 0)
-            overall_correct = eval_results.get('total_correct', 0)
-        
-        # 总是添加整体指标
-        overall_loss = eval_results.get('overall_loss', 0)
-        eval_log_data["eval/overall_loss"] = overall_loss
-        eval_log_data["eval/overall_accuracy"] = overall_accuracy
-        eval_log_data["eval/overall_samples"] = overall_samples
-        eval_log_data["eval/overall_correct"] = overall_correct
-        
-        # 记录到wandb
         current_step = step if step is not None else self.current_step
         
-        # 打印综合评估结果
-        self.dist_ctx.print_main("=" * 80)
-        self.dist_ctx.print_main(f"📊 评估完成 (Step {current_step})")
-        self.dist_ctx.print_main("=" * 80)
-        self.dist_ctx.print_main(f"🎯 整体准确率: {overall_accuracy:.4f} ({overall_accuracy*100:.2f}%)")
-        self.dist_ctx.print_main(f"📈 整体损失:   {overall_loss:.6f}")
-        self.dist_ctx.print_main(f"📊 总样本数:   {overall_samples:,}")
-        self.dist_ctx.print_main(f"✅ 正确样本:   {overall_correct:,}")
-        self.dist_ctx.print_main("=" * 80)
-        
-        # 添加调试信息
-        self.dist_ctx.print_main(f"🔍 准备记录eval指标到wandb (step={current_step}):")
-        for key, value in eval_log_data.items():
-            self.dist_ctx.print_main(f"   • {key}: {value}")
-        
-        self.monitor.log_metrics(eval_log_data, current_step)
-        
-        # 更新最佳模型
-        eval_results_for_best = {
-            'overall_loss': overall_loss,
-            'overall_accuracy': overall_accuracy
-        }
-        self._update_best_model(eval_results_for_best, current_step)
-        
-        # 返回整体指标
-        self.dist_ctx.print_main(f"✅ 评估结束 - 验证损失: {overall_loss:.4f}, 准确率: {overall_accuracy:.4f}")
-        return overall_loss, overall_accuracy
+        try:
+            self.dist_ctx.print_main("🔍 开始评估...")
+            
+            # 添加评估前的barrier，确保所有进程同步
+            from .utils.distributed import safe_barrier
+            if not safe_barrier():
+                self.dist_ctx.print_main("⚠️  评估前同步失败，跳过本次评估")
+                return 0.0, 0.0
+            
+            # 统一使用多数据集评估函数
+            eval_results = evaluate_multi_dataset(self.model, self.val_loader, self.dist_ctx.device, self.dataset_configs)
+            
+            # 检查评估结果是否有效
+            if eval_results is None or not eval_results:
+                self.dist_ctx.print_main("⚠️  评估结果为空，跳过本次评估")
+                return 0.0, 0.0
+            
+            # 准备wandb记录数据
+            eval_log_data = {}
+            overall_samples = 0
+            overall_correct = 0
+            
+            # 处理数据集指标（如果存在）
+            if eval_results and 'dataset_metrics' in eval_results and eval_results['dataset_metrics']:
+                self.dist_ctx.print_main(f"📊 检测到多数据集评估结果:")
+                # 多数据集情况：记录每个数据集的指标
+                for dataset_name, metrics in eval_results['dataset_metrics'].items():
+                    eval_log_data[f"eval/{dataset_name}_loss"] = metrics['loss']
+                    eval_log_data[f"eval/{dataset_name}_accuracy"] = metrics['accuracy']
+                    eval_log_data[f"eval/{dataset_name}_samples"] = metrics['samples']
+                    
+                    overall_samples += metrics['samples']
+                    overall_correct += metrics['correct']
+                    
+                    # 打印每个数据集的详细结果
+                    self.dist_ctx.print_main(f"  📂 {dataset_name}:")
+                    self.dist_ctx.print_main(f"     Loss: {metrics['loss']:.6f}")
+                    self.dist_ctx.print_main(f"     Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
+                    self.dist_ctx.print_main(f"     Samples: {metrics['samples']:,} (Correct: {metrics['correct']:,})")
+            else:
+                # 单数据集情况：使用整体指标
+                self.dist_ctx.print_main(f"📊 检测到单数据集评估结果")
+                overall_samples = eval_results.get('total_samples', 0)
+                overall_correct = eval_results.get('total_correct', 0)
+            
+            # 计算整体指标
+            overall_accuracy = overall_correct / overall_samples if overall_samples > 0 else 0
+            overall_loss = eval_results.get('overall_loss', 0)
+            
+            # 添加整体指标到wandb数据
+            eval_log_data["eval/overall_loss"] = overall_loss
+            eval_log_data["eval/overall_accuracy"] = overall_accuracy
+            eval_log_data["eval/overall_samples"] = overall_samples
+            eval_log_data["eval/overall_correct"] = overall_correct
+            
+            # 输出整体结果
+            self.dist_ctx.print_main("=" * 80)
+            self.dist_ctx.print_main(f"🎯 整体准确率: {overall_accuracy:.4f} ({overall_accuracy*100:.2f}%)")
+            self.dist_ctx.print_main(f"📈 整体损失:   {overall_loss:.6f}")
+            self.dist_ctx.print_main(f"📊 总样本数:   {overall_samples:,}")
+            self.dist_ctx.print_main(f"✅ 正确样本:   {overall_correct:,}")
+            self.dist_ctx.print_main("=" * 80)
+            
+            # 记录到WandB
+            try:
+                self.monitor.log_metrics(eval_log_data, current_step)
+                self.dist_ctx.print_main(f"✅ 评估指标已记录到WandB")
+            except Exception as wandb_error:
+                self.dist_ctx.print_main(f"⚠️  WandB记录失败: {wandb_error}")
+            
+            # 更新最佳模型
+            try:
+                eval_results_for_best = {
+                    'overall_loss': overall_loss,
+                    'overall_accuracy': overall_accuracy
+                }
+                self._update_best_model(eval_results_for_best, current_step)
+            except Exception as best_model_error:
+                self.dist_ctx.print_main(f"⚠️  最佳模型更新失败: {best_model_error}")
+            
+            # 返回整体指标
+            self.dist_ctx.print_main(f"✅ 评估结束 - 验证损失: {overall_loss:.4f}, 准确率: {overall_accuracy:.4f}")
+            return overall_loss, overall_accuracy
+            
+        except Exception as eval_error:
+            # 简化的错误处理
+            self.dist_ctx.print_main(f"❌ 评估过程出错: {eval_error}")
+            self.dist_ctx.print_main("🔄 跳过本次评估，继续训练...")
+            return 0.0, 0.0
     
     def full_evaluation_on_best_model(self):
         """在最佳模型上进行完整评估"""
