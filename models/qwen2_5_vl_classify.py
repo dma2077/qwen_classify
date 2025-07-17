@@ -176,36 +176,16 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
                 import torch.nn.functional as F
                 loss = F.cross_entropy(logits, labels)
         
-        # 🔥 关键修复：评估时不返回大tensor，避免NCCL超时
-        # 检查是否在评估模式下（通过model.training判断）
-        # 兼容DeepSpeed包装：检查多个training状态
-        is_eval_mode = not self.training
+        # 🔥 关键修复：无论训练还是评估都不返回大tensor，避免NCCL超时
+        # 经过代码分析确认：训练和评估过程中都不需要hidden_states和attentions
+        # 只需要loss和logits进行反向传播和预测计算
         
-        # 如果是DeepSpeed包装的模型，还要检查底层模型的training状态
-        try:
-            if hasattr(self, 'model') and hasattr(self.model, 'training'):
-                is_eval_mode = is_eval_mode or not self.model.training
-        except:
-            pass
+        print(f"🔍 模型输出简化: self.training={self.training}, 只返回loss和logits")
         
-        # 添加调试信息以确认修复是否生效
-        if is_eval_mode:
-            print(f"🔍 评估模式检测: self.training={self.training}, 返回简化输出")
-        
-        if is_eval_mode:
-            # 评估模式：只返回必要的loss和logits，不返回hidden_states和attentions
-            return SequenceClassifierOutput(
-                loss=loss,
-                logits=logits,
-                hidden_states=None,  # 评估时不返回，避免4.67亿元素的NCCL reduce
-                attentions=None,     # 评估时不返回，节省内存和通信带宽
-            )
-        else:
-            # 训练模式：返回完整的输出（如果需要用于其他目的）
-            print(f"🔍 训练模式检测: self.training={self.training}, 返回完整输出")
-            return SequenceClassifierOutput(
-                loss=loss,
-                logits=logits,
-                hidden_states=outputs.hidden_states,
-                attentions=outputs.attentions,
-            )
+        # 统一返回简化输出 - 大幅节省内存和通信带宽
+        return SequenceClassifierOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=None,  # ✅ 训练和评估都不需要，避免4.67亿元素的NCCL reduce
+            attentions=None,     # ✅ 训练和评估都不需要，节省内存和通信带宽
+        )
