@@ -9,7 +9,14 @@ def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
     """评估模型性能 - 在分布式环境下正确聚合所有GPU的结果"""
     import torch.distributed as dist
     
+    # 🔥 确保模型处于评估模式 - 兼容DeepSpeed包装
     model.eval()
+    if hasattr(model, 'module'):
+        model.module.eval()
+        print(f"🔍 设置DeepSpeed包装模型为eval模式: model.training={model.training}, model.module.training={model.module.training}")
+    else:
+        print(f"🔍 设置模型为eval模式: model.training={model.training}")
+    
     total_loss = 0
     correct = 0
     total = 0
@@ -135,7 +142,13 @@ def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> D
     """
     import torch.distributed as dist
     
+    # 🔥 确保模型处于评估模式 - 兼容DeepSpeed包装
     model.eval()
+    if hasattr(model, 'module'):
+        model.module.eval()
+        print(f"🔍 多数据集评估: 设置DeepSpeed包装模型为eval模式: model.training={model.training}, model.module.training={model.module.training}")
+    else:
+        print(f"🔍 多数据集评估: 设置模型为eval模式: model.training={model.training}")
     
     # 检查分布式状态
     is_distributed = dist.is_available() and dist.is_initialized()

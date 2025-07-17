@@ -178,7 +178,21 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         
         # 🔥 关键修复：评估时不返回大tensor，避免NCCL超时
         # 检查是否在评估模式下（通过model.training判断）
-        if not self.training:
+        # 兼容DeepSpeed包装：检查多个training状态
+        is_eval_mode = not self.training
+        
+        # 如果是DeepSpeed包装的模型，还要检查底层模型的training状态
+        try:
+            if hasattr(self, 'model') and hasattr(self.model, 'training'):
+                is_eval_mode = is_eval_mode or not self.model.training
+        except:
+            pass
+        
+        # 添加调试信息以确认修复是否生效
+        if is_eval_mode:
+            print(f"🔍 评估模式检测: self.training={self.training}, 返回简化输出")
+        
+        if is_eval_mode:
             # 评估模式：只返回必要的loss和logits，不返回hidden_states和attentions
             return SequenceClassifierOutput(
                 loss=loss,
@@ -188,6 +202,7 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
             )
         else:
             # 训练模式：返回完整的输出（如果需要用于其他目的）
+            print(f"🔍 训练模式检测: self.training={self.training}, 返回完整输出")
             return SequenceClassifierOutput(
                 loss=loss,
                 logits=logits,
