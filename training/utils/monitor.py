@@ -905,7 +905,11 @@ class TrainingMonitor:
             skip_wandb: 如果为True，跳过wandb记录（用于eval步骤时避免重复记录）
         """
         current_time = time.time()
-        step_time = current_time - self.step_start_time
+        # 修复step_start_time可能为None的问题
+        if self.step_start_time is not None:
+            step_time = current_time - self.step_start_time
+        else:
+            step_time = 0.0
         
         # 如果提供了实时FLOPs，更新当前FLOPs值
         if real_time_flops is not None and real_time_flops > 0:

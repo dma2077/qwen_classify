@@ -373,12 +373,14 @@ class DeepSpeedTrainer:
         # 如果进行了实时FLOPs测量，添加MFU信息
         if hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
             current_time = time.time()
-            actual_step_time = current_time - self.monitor.step_start_time
-            
-            current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, actual_step_time)
-            if current_mfu is not None:
-                log_message += f" | MFU: {current_mfu:.1%}"
-                log_message += " [📊实时测量]"
+            step_start_time = getattr(self.monitor, 'step_start_time', None)
+            if step_start_time is not None:
+                actual_step_time = current_time - step_start_time
+                
+                current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, actual_step_time)
+                if current_mfu is not None:
+                    log_message += f" | MFU: {current_mfu:.1%}"
+                    log_message += " [📊实时测量]"
         
         # 打印日志信息
         if self.dist_ctx.is_main_process and hasattr(self, 'pbar'):
@@ -442,9 +444,13 @@ class DeepSpeedTrainer:
             if is_effective_step:
                 effective_step += 1
                 
-                # 计算步骤时间
+                # 计算步骤时间 - 修复None值问题
                 current_time = time.time()
-                step_time = current_time - self.monitor.step_start_time if hasattr(self.monitor, 'step_start_time') else 0.0
+                step_start_time = getattr(self.monitor, 'step_start_time', None)
+                if step_start_time is not None:
+                    step_time = current_time - step_start_time
+                else:
+                    step_time = 0.0
                 
                 # 判断是否为评估步骤
                 is_eval_step = (effective_step % self.config['eval_steps'] == 0)
