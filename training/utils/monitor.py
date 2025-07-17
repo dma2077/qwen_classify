@@ -644,28 +644,9 @@ class TrainingMonitor:
             if wandb.run is None:
                 return
             
-            # 🔥 关键修复：定义eval指标与effective_step的关系，确保x轴对齐
-            # 在DeepSpeed训练中，使用effective_step而不是global_step
-            wandb.define_metric("effective_step")
-            wandb.define_metric("eval/*", step_metric="effective_step")
-            
-            # 定义核心eval指标
-            wandb.define_metric("eval/overall_loss", summary="min", step_metric="effective_step")
-            wandb.define_metric("eval/overall_accuracy", summary="max", step_metric="effective_step")
-            wandb.define_metric("eval/overall_samples", summary="last", step_metric="effective_step")
-            wandb.define_metric("eval/overall_correct", summary="last", step_metric="effective_step")
-            
-            # 定义数据集特定的eval指标
-            dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
-            for dataset_name in dataset_configs.keys():
-                wandb.define_metric(f"eval/{dataset_name}_loss", summary="min", step_metric="effective_step")
-                wandb.define_metric(f"eval/{dataset_name}_accuracy", summary="max", step_metric="effective_step")
-                wandb.define_metric(f"eval/{dataset_name}_samples", summary="last", step_metric="effective_step")
-            
-            # 定义最终评估指标
-            wandb.define_metric("eval/final_evaluation", summary="last", step_metric="effective_step")
-            
-            print("✅ 已定义eval指标配置（与effective_step同步）")
+            # 🔥 最简策略：暂时跳过define_metric，直接使用默认行为
+            # 这样可以避免可能的兼容性问题
+            print("✅ 跳过复杂的指标定义，使用WandB默认行为")
             
         except Exception as e:
             print(f"⚠️  定义eval指标失败: {e}")
@@ -853,8 +834,7 @@ class TrainingMonitor:
                     "training/loss": float(loss),
                     "training/lr": float(learning_rate), 
                     "training/epoch": float(epoch),
-                    "training/grad_norm": float(grad_norm),
-                    "effective_step": int(step)  # 🔥 使用effective_step替代global_step
+                    "training/grad_norm": float(grad_norm)
                 }
                 
                 # 使用动态性能指标频率
@@ -1018,9 +998,8 @@ class TrainingMonitor:
                     eval_metrics_count += 1
                     eval_metrics_list.append(key)
             
-            # 🔥 关键修复：为eval指标添加effective_step，确保与训练指标x轴同步
-            if eval_metrics_count > 0 and step is not None:
-                log_data["effective_step"] = int(step)
+            # 🔥 新策略：直接记录，不添加额外的step字段，避免冲突
+            # 让WandB使用传入的step参数作为x轴
             
             # 记录指标
             if step is not None:
@@ -1034,7 +1013,6 @@ class TrainingMonitor:
             if eval_metrics_count > 0:
                 print(f"📊 已记录 {eval_metrics_count} 个eval指标到WandB ({step_info})")
                 print(f"   eval指标: {eval_metrics_list}")
-                print(f"   包含effective_step: {log_data.get('effective_step', 'N/A')}")
                 
                 # 🔥 额外验证：检查WandB run状态
                 if wandb.run is not None:
@@ -1044,6 +1022,13 @@ class TrainingMonitor:
                     print(f"   WandB项目: {wandb.run.project}")
                     print(f"   WandB run ID: {wandb.run.id}")
                     print(f"   实际记录的数据keys: {list(log_data.keys())}")
+                    
+                    # 🔥 强制刷新，确保数据同步
+                    try:
+                        wandb.log({}, commit=True)  # 强制提交
+                        print(f"   ✅ 强制提交完成")
+                    except Exception as flush_error:
+                        print(f"   ⚠️ 强制提交失败: {flush_error}")
                 else:
                     print("   ⚠️ WandB run为None！")
             
