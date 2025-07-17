@@ -520,6 +520,9 @@ class TrainingMonitor:
                     
                     # 自动创建eval图表
                     self._create_eval_charts()
+                    
+                    # 创建详细图表
+                    self._create_detailed_charts()
             except Exception as display_error:
                 print(f"⚠️  wandb链接显示失败: {display_error}")
             
@@ -539,18 +542,18 @@ class TrainingMonitor:
             
             import wandb
             
-            # 定义整体eval指标
-            wandb.define_metric("eval/overall_loss", summary="min", step_metric="global_step")
-            wandb.define_metric("eval/overall_accuracy", summary="max", step_metric="global_step")
-            wandb.define_metric("eval/overall_samples", summary="last", step_metric="global_step")
-            wandb.define_metric("eval/overall_correct", summary="last", step_metric="global_step")
+            # 简化指标定义，不使用step_metric
+            wandb.define_metric("eval/overall_loss", summary="min")
+            wandb.define_metric("eval/overall_accuracy", summary="max")
+            wandb.define_metric("eval/overall_samples", summary="last")
+            wandb.define_metric("eval/overall_correct", summary="last")
             
             # 定义数据集特定的eval指标
             dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
             for dataset_name in dataset_configs.keys():
-                wandb.define_metric(f"eval/{dataset_name}_loss", summary="min", step_metric="global_step")
-                wandb.define_metric(f"eval/{dataset_name}_accuracy", summary="max", step_metric="global_step")
-                wandb.define_metric(f"eval/{dataset_name}_samples", summary="last", step_metric="global_step")
+                wandb.define_metric(f"eval/{dataset_name}_loss", summary="min")
+                wandb.define_metric(f"eval/{dataset_name}_accuracy", summary="max")
+                wandb.define_metric(f"eval/{dataset_name}_samples", summary="last")
             
             print("✅ 已定义eval指标配置")
             
@@ -565,63 +568,47 @@ class TrainingMonitor:
             
             import wandb
             
-            # 创建自定义图表配置
-            charts_config = {
-                "eval_loss_chart": {
-                    "title": "Evaluation Loss",
-                    "xAxis": "Step",
-                    "yAxis": "Loss",
-                    "metrics": ["eval/overall_loss"]
-                },
-                "eval_accuracy_chart": {
-                    "title": "Evaluation Accuracy", 
-                    "xAxis": "Step",
-                    "yAxis": "Accuracy",
-                    "metrics": ["eval/overall_accuracy"]
-                }
-            }
+            # 不记录初始指标，让eval指标在第一次真正的评估时创建
+            # 这样可以避免step=0的初始值影响后续的数据更新
             
-            # 添加数据集特定的图表
-            dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
-            for dataset_name in dataset_configs.keys():
-                charts_config[f"eval_{dataset_name}_loss"] = {
-                    "title": f"{dataset_name} Loss",
-                    "xAxis": "Step", 
-                    "yAxis": "Loss",
-                    "metrics": [f"eval/{dataset_name}_loss"]
-                }
-                charts_config[f"eval_{dataset_name}_accuracy"] = {
-                    "title": f"{dataset_name} Accuracy",
-                    "xAxis": "Step",
-                    "yAxis": "Accuracy", 
-                    "metrics": [f"eval/{dataset_name}_accuracy"]
-                }
-            
-            # 记录初始指标，让wandb创建图表
-            initial_eval_metrics = {
-                "eval/overall_loss": 0.0,
-                "eval/overall_accuracy": 0.0,
-                "eval/overall_samples": 0,
-                "eval/overall_correct": 0
-            }
-            
-            # 添加数据集特定的指标
-            for dataset_name in dataset_configs.keys():
-                initial_eval_metrics[f"eval/{dataset_name}_loss"] = 0.0
-                initial_eval_metrics[f"eval/{dataset_name}_accuracy"] = 0.0
-                initial_eval_metrics[f"eval/{dataset_name}_samples"] = 0
-            
-            # 记录初始指标
-            wandb.log(initial_eval_metrics, step=0, commit=True)
-            
-            # 强制同步，确保图表创建
-            wandb.log({"eval/chart_created": 1.0}, step=0, commit=True)
-            
-            print("📊 已创建eval图表配置，eval指标将在wandb界面中显示")
+            print("📊 eval图表将在第一次评估时自动创建")
             
         except Exception as e:
             print(f"⚠️  创建eval图表失败: {e}")
     
+    def _create_detailed_charts(self):
+        """创建详细的训练和评估指标图表"""
+        try:
+            if not self.use_wandb or not self._is_main_process():
+                return
+            
+            import wandb
+            
+            # 简化方法：只记录初始数据点，让wandb自动创建时间序列图表
+            # 这样比自定义图表更可靠，数据会自动更新
+            
+            # 记录初始训练指标
+            wandb.log({
+                "training/loss": 0.0,
+                "training/lr": 1e-5,
+                "training/grad_norm": 1.0,
+                "training/epoch": 0.0,
+                "global_step": 0
+            }, commit=True)
+            
+            # 记录初始性能指标
+            wandb.log({
+                "perf/mfu": 0.0,
+                "perf/step_time": 1.0,
+                "perf/tokens_per_second": 0.0,
+                "global_step": 0
+            }, commit=True)
+            
+            print("✅ 基础图表框架已创建，wandb将自动生成时间序列图表")
+            
+        except Exception as e:
+            print(f"创建基础图表失败: {e}")
+
     def _ensure_eval_charts_visible(self):
         """确保eval图表在wandb界面中可见"""
         try:
@@ -633,21 +620,7 @@ class TrainingMonitor:
             # 记录一个特殊的标记，确保eval指标被wandb识别
             wandb.log({"eval/chart_visibility_check": 1.0}, commit=True)
             
-            # 创建自定义图表定义
-            try:
-                # 尝试创建自定义图表
-                wandb.define_metric("eval/overall_loss", summary="min")
-                wandb.define_metric("eval/overall_accuracy", summary="max")
-                
-                # 添加数据集特定的指标定义
-                dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
-                for dataset_name in dataset_configs.keys():
-                    wandb.define_metric(f"eval/{dataset_name}_loss", summary="min")
-                    wandb.define_metric(f"eval/{dataset_name}_accuracy", summary="max")
-                
-                print("✅ 已定义eval指标的自定义图表")
-            except Exception as define_error:
-                print(f"⚠️  定义自定义图表失败: {define_error}")
+            print("✅ eval图表可见性已确保")
             
         except Exception as e:
             print(f"⚠️  确保eval图表可见性失败: {e}")
@@ -918,27 +891,32 @@ class TrainingMonitor:
             if has_eval_metrics and not hasattr(self, '_eval_charts_created'):
                 self._ensure_eval_charts_visible()
                 self._eval_charts_created = True
+                
+                # 在第一次eval时，记录一个特殊的标记来确保eval分组在wandb界面中显示
+                try:
+                    wandb.log({"eval/first_eval_marker": 1.0}, step=step, commit=True)
+                    print("📊 已标记第一次eval，eval分组将在wandb界面中显示")
+                except Exception as marker_error:
+                    print(f"⚠️  记录eval标记失败: {marker_error}")
             
             # 记录到wandb
             if step is not None:
-                # 确保包含global_step
-                log_data["global_step"] = int(step)
+                print(f"🔍 准备调用wandb.log: step={step}, data={log_data}")
                 wandb.log(log_data, step=int(step), commit=commit)
+                print(f"✅ wandb.log调用完成")
+                
                 # 只为eval指标显示成功信息
                 if has_eval_metrics:
                     print(f"📊 eval指标已记录到wandb (step={step}): {list(log_data.keys())}")
                     print(f"🔗 请访问wandb界面查看eval图表: {wandb.run.url}")
-                    
-                    # 强制同步eval指标
-                    wandb.log({"eval/sync_marker": float(step), "global_step": int(step)}, step=int(step), commit=True)
             else:
+                print(f"🔍 准备调用wandb.log: data={log_data}")
                 wandb.log(log_data, commit=commit)
+                print(f"✅ wandb.log调用完成")
+                
                 if has_eval_metrics:
                     print(f"📊 eval指标已记录到wandb: {list(log_data.keys())}")
                     print(f"🔗 请访问wandb界面查看eval图表: {wandb.run.url}")
-                    
-                    # 强制同步eval指标
-                    wandb.log({"eval/sync_marker": 1.0}, commit=True)
                 
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")

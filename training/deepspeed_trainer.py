@@ -18,6 +18,11 @@ class DeepSpeedTrainer:
         self.config = config
         self.dist_ctx = DistributedContext()
         
+        # 设置NCCL超时保护（在分布式训练时）
+        if self.dist_ctx.world_size > 1:
+            from .utils.distributed import setup_nccl_timeout_env
+            setup_nccl_timeout_env()
+        
         # 只在主进程创建完整的TrainingMonitor，非主进程使用DummyMonitor
         if self.dist_ctx.is_main_process:
             from training.utils.monitor import TrainingMonitor
@@ -413,10 +418,13 @@ class DeepSpeedTrainer:
         Args:
             step: 当前步数，如果提供则用于最佳模型保存；否则使用self.current_step
         """
-        self.dist_ctx.print_main("开始评估...")
+        self.dist_ctx.print_main("🔍 开始评估...")
         
         # 统一使用多数据集评估函数
         eval_results = evaluate_multi_dataset(self.model, self.val_loader, self.dist_ctx.device, self.dataset_configs)
+        
+        # 添加调试信息
+        self.dist_ctx.print_main(f"🔍 eval_results 原始数据: {eval_results}")
         
         # 准备wandb记录数据
         eval_log_data = {}
@@ -425,6 +433,7 @@ class DeepSpeedTrainer:
         
         # 处理数据集指标（如果存在）
         if eval_results and 'dataset_metrics' in eval_results and eval_results['dataset_metrics']:
+            self.dist_ctx.print_main(f"📊 检测到多数据集评估结果:")
             # 多数据集情况：记录每个数据集的指标
             for dataset_name, metrics in eval_results['dataset_metrics'].items():
                 eval_log_data[f"eval/{dataset_name}_loss"] = metrics['loss']
@@ -433,12 +442,23 @@ class DeepSpeedTrainer:
                 
                 overall_samples += metrics['samples']
                 overall_correct += metrics['correct']
+                
+                # 打印每个数据集的详细结果
+                self.dist_ctx.print_main(f"  📂 {dataset_name}:")
+                self.dist_ctx.print_main(f"     Loss: {metrics['loss']:.6f}")
+                self.dist_ctx.print_main(f"     Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
+                self.dist_ctx.print_main(f"     Samples: {metrics['samples']:,} (Correct: {metrics['correct']:,})")
         else:
+            self.dist_ctx.print_main(f"📊 检测到单数据集评估结果:")
             # 单数据集情况：使用overall指标作为主要指标
             eval_log_data["eval/loss"] = eval_results.get('overall_loss', 0)
             eval_log_data["eval/accuracy"] = eval_results.get('overall_accuracy', 0)
             overall_samples = eval_results.get('total_samples', 0)
             overall_correct = eval_results.get('total_correct', 0)
+            
+            self.dist_ctx.print_main(f"  📈 Loss: {eval_results.get('overall_loss', 0):.6f}")
+            self.dist_ctx.print_main(f"  🎯 Accuracy: {eval_results.get('overall_accuracy', 0):.4f} ({eval_results.get('overall_accuracy', 0)*100:.2f}%)")
+            self.dist_ctx.print_main(f"  📊 Samples: {overall_samples:,} (Correct: {overall_correct:,})")
         
         # 添加整体指标（适用于单数据集和多数据集）
         if overall_samples > 0:
@@ -449,13 +469,24 @@ class DeepSpeedTrainer:
             overall_correct = eval_results.get('total_correct', 0)
         
         # 总是添加整体指标
-        eval_log_data["eval/overall_loss"] = eval_results.get('overall_loss', 0)
+        overall_loss = eval_results.get('overall_loss', 0)
+        eval_log_data["eval/overall_loss"] = overall_loss
         eval_log_data["eval/overall_accuracy"] = overall_accuracy
         eval_log_data["eval/overall_samples"] = overall_samples
         eval_log_data["eval/overall_correct"] = overall_correct
         
         # 记录到wandb
         current_step = step if step is not None else self.current_step
+        
+        # 打印综合评估结果
+        self.dist_ctx.print_main("=" * 80)
+        self.dist_ctx.print_main(f"📊 评估完成 (Step {current_step})")
+        self.dist_ctx.print_main("=" * 80)
+        self.dist_ctx.print_main(f"🎯 整体准确率: {overall_accuracy:.4f} ({overall_accuracy*100:.2f}%)")
+        self.dist_ctx.print_main(f"📈 整体损失:   {overall_loss:.6f}")
+        self.dist_ctx.print_main(f"📊 总样本数:   {overall_samples:,}")
+        self.dist_ctx.print_main(f"✅ 正确样本:   {overall_correct:,}")
+        self.dist_ctx.print_main("=" * 80)
         
         # 添加调试信息
         self.dist_ctx.print_main(f"🔍 准备记录eval指标到wandb (step={current_step}):")
@@ -466,14 +497,13 @@ class DeepSpeedTrainer:
         
         # 更新最佳模型
         eval_results_for_best = {
-            'overall_loss': eval_results.get('overall_loss', 0),
+            'overall_loss': overall_loss,
             'overall_accuracy': overall_accuracy
         }
         self._update_best_model(eval_results_for_best, current_step)
         
         # 返回整体指标
-        overall_loss = eval_results.get('overall_loss', 0)
-        self.dist_ctx.print_main(f"验证损失: {overall_loss:.4f}, 准确率: {overall_accuracy:.4f}")
+        self.dist_ctx.print_main(f"✅ 评估结束 - 验证损失: {overall_loss:.4f}, 准确率: {overall_accuracy:.4f}")
         return overall_loss, overall_accuracy
     
     def full_evaluation_on_best_model(self):
@@ -773,8 +803,26 @@ class DeepSpeedTrainer:
                     if effective_step > 0 and effective_step % eval_steps == 0:
                         # 暂时刷新进度条以避免输出冲突
                         pbar.clear()
-                        eval_loss, eval_accuracy = self.evaluate(step=effective_step)
-                        # 注意：评估结果已经在evaluate方法中记录到wandb了，无需重复记录
+                        
+                        # 添加评估异常处理，避免NCCL超时导致训练中断
+                        try:
+                            eval_loss, eval_accuracy = self.evaluate(step=effective_step)
+                            # 注意：评估结果已经在evaluate方法中记录到wandb了，无需重复记录
+                        except Exception as eval_error:
+                            if self.dist_ctx.is_main_process:
+                                print(f"⚠️  评估过程出错: {eval_error}")
+                                print("⚠️  跳过本次评估，继续训练...")
+                            # 记录一个占位符的eval结果，避免wandb图表中断
+                            try:
+                                placeholder_eval_data = {
+                                    "eval/overall_loss": 999.0,  # 使用明显的占位符值
+                                    "eval/overall_accuracy": 0.0,
+                                    "eval/evaluation_failed": 1.0,  # 标记评估失败
+                                }
+                                self.monitor.log_metrics(placeholder_eval_data, effective_step)
+                            except:
+                                pass  # 如果连记录都失败，就完全跳过
+                        
                         self.model.train()
                         # 重新显示进度条
                         pbar.refresh()

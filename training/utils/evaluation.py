@@ -3,6 +3,7 @@ import time
 from typing import Dict, Tuple
 from tqdm import tqdm
 from collections import defaultdict
+from .distributed import safe_all_reduce, safe_barrier
 
 def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
     """评估模型性能 - 在分布式环境下正确聚合所有GPU的结果"""
@@ -89,10 +90,29 @@ def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
         batch_count_tensor = torch.tensor(batch_count, dtype=torch.long, device=device)
         
         # 聚合所有GPU的结果
-        dist.all_reduce(total_loss_tensor, op=dist.ReduceOp.SUM)
-        dist.all_reduce(correct_tensor, op=dist.ReduceOp.SUM)
-        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
-        dist.all_reduce(batch_count_tensor, op=dist.ReduceOp.SUM)
+        if not safe_all_reduce(total_loss_tensor, op=dist.ReduceOp.SUM, timeout=180):
+            print("⚠️  total_loss聚合失败，使用本地结果")
+            avg_loss = total_loss / batch_count if batch_count > 0 else 0
+            accuracy = correct / total if total > 0 else 0
+            return avg_loss, accuracy
+            
+        if not safe_all_reduce(correct_tensor, op=dist.ReduceOp.SUM, timeout=180):
+            print("⚠️  correct聚合失败，使用本地结果")
+            avg_loss = total_loss / batch_count if batch_count > 0 else 0
+            accuracy = correct / total if total > 0 else 0
+            return avg_loss, accuracy
+            
+        if not safe_all_reduce(total_tensor, op=dist.ReduceOp.SUM, timeout=180):
+            print("⚠️  total聚合失败，使用本地结果")
+            avg_loss = total_loss / batch_count if batch_count > 0 else 0
+            accuracy = correct / total if total > 0 else 0
+            return avg_loss, accuracy
+            
+        if not safe_all_reduce(batch_count_tensor, op=dist.ReduceOp.SUM, timeout=180):
+            print("⚠️  batch_count聚合失败，使用本地结果")
+            avg_loss = total_loss / batch_count if batch_count > 0 else 0
+            accuracy = correct / total if total > 0 else 0
+            return avg_loss, accuracy
         
         # 计算全局平均值
         global_avg_loss = total_loss_tensor.item() / batch_count_tensor.item() if batch_count_tensor.item() > 0 else 0
@@ -147,8 +167,10 @@ def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> D
     is_distributed = dist.is_available() and dist.is_initialized()
     if is_distributed:
         current_rank = dist.get_rank()
+        world_size = dist.get_world_size()
     else:
         current_rank = 0
+        world_size = 1
     
     # 只在主进程显示进度条
     show_progress = not is_distributed or current_rank == 0
@@ -247,6 +269,87 @@ def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> D
     # 关闭进度条
     eval_pbar.close()
     
+    # 在分布式环境下聚合结果
+    if is_distributed:
+        try:
+            if show_progress:
+                print(f"🔄 开始分布式评估结果聚合 (world_size={world_size})...")
+            
+            # 聚合整体统计
+            total_loss_tensor = torch.tensor(total_loss, dtype=torch.float32, device=device)
+            correct_tensor = torch.tensor(correct, dtype=torch.long, device=device) 
+            total_tensor = torch.tensor(total, dtype=torch.long, device=device)
+            batch_count_tensor = torch.tensor(batch_count, dtype=torch.long, device=device)
+            
+            # 使用较短的超时时间并添加错误处理
+            try:
+                if not safe_all_reduce(total_loss_tensor, op=dist.ReduceOp.SUM, timeout=180):
+                    raise Exception("total_loss聚合超时")
+                if not safe_all_reduce(correct_tensor, op=dist.ReduceOp.SUM, timeout=180):
+                    raise Exception("correct聚合超时")
+                if not safe_all_reduce(total_tensor, op=dist.ReduceOp.SUM, timeout=180):
+                    raise Exception("total聚合超时")
+                if not safe_all_reduce(batch_count_tensor, op=dist.ReduceOp.SUM, timeout=180):
+                    raise Exception("batch_count聚合超时")
+                
+                if show_progress:
+                    print("✅ 整体统计聚合完成")
+                    
+            except Exception as e:
+                if show_progress:
+                    print(f"❌ 整体统计聚合失败: {e}")
+                    print("⚠️  将使用本地统计结果")
+                # 继续使用本地结果，不退出
+            
+            # 聚合数据集特定统计
+            aggregated_dataset_stats = {}
+            for dataset_name, stats in dataset_stats.items():
+                try:
+                    # 为每个数据集创建tensor
+                    dataset_loss_tensor = torch.tensor(stats['total_loss'], dtype=torch.float32, device=device)
+                    dataset_correct_tensor = torch.tensor(stats['correct'], dtype=torch.long, device=device)
+                    dataset_total_tensor = torch.tensor(stats['total'], dtype=torch.long, device=device)
+                    dataset_batch_count_tensor = torch.tensor(stats['batch_count'], dtype=torch.long, device=device)
+                    
+                    # 聚合数据集统计
+                    if not safe_all_reduce(dataset_loss_tensor, op=dist.ReduceOp.SUM, timeout=120):
+                        raise Exception(f"{dataset_name}_loss聚合超时")
+                    if not safe_all_reduce(dataset_correct_tensor, op=dist.ReduceOp.SUM, timeout=120):
+                        raise Exception(f"{dataset_name}_correct聚合超时")
+                    if not safe_all_reduce(dataset_total_tensor, op=dist.ReduceOp.SUM, timeout=120):
+                        raise Exception(f"{dataset_name}_total聚合超时")
+                    if not safe_all_reduce(dataset_batch_count_tensor, op=dist.ReduceOp.SUM, timeout=120):
+                        raise Exception(f"{dataset_name}_batch_count聚合超时")
+                    
+                    aggregated_dataset_stats[dataset_name] = {
+                        'total_loss': dataset_loss_tensor.item(),
+                        'correct': dataset_correct_tensor.item(),
+                        'total': dataset_total_tensor.item(),
+                        'batch_count': dataset_batch_count_tensor.item()
+                    }
+                    
+                except Exception as e:
+                    if show_progress:
+                        print(f"❌ 数据集 {dataset_name} 统计聚合失败: {e}")
+                    # 使用本地统计
+                    aggregated_dataset_stats[dataset_name] = stats
+            
+            # 使用聚合后的结果
+            total_loss = total_loss_tensor.item()
+            correct = correct_tensor.item()
+            total = total_tensor.item()
+            batch_count = batch_count_tensor.item()
+            dataset_stats = aggregated_dataset_stats
+            
+            if show_progress:
+                print("✅ 分布式评估结果聚合完成")
+                
+        except Exception as e:
+            if show_progress:
+                print(f"❌ 分布式聚合过程出错: {e}")
+                print("⚠️  将使用本地评估结果")
+            # 继续使用本地结果
+    
     # 计算结果
     overall_avg_loss = total_loss / batch_count if batch_count > 0 else 0
     overall_accuracy = correct / total if total > 0 else 0
@@ -264,16 +367,12 @@ def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> D
                 'correct': stats['correct']
             }
     
-    # 在分布式环境下聚合结果
-    if is_distributed:
-        # TODO: 添加分布式聚合逻辑
-        # 这里可以添加类似单数据集评估的分布式聚合代码
-        pass
-    
-    # 输出结果
+    # 输出结果（只在主进程输出）
     if show_progress:
         print("\n" + "="*80)
         print("📊 多数据集评估结果")
+        if is_distributed:
+            print(f"   (分布式聚合结果, world_size={world_size})")
         print("="*80)
         print(f"📈 Overall Loss:     {overall_avg_loss:.6f}")
         print(f"🎯 Overall Accuracy: {overall_accuracy:.4f} ({overall_accuracy*100:.2f}%)")
