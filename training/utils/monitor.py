@@ -1175,12 +1175,13 @@ class TrainingMonitor:
                 else:
                     print("   ⚠️ WandB run为None！")
                 
-                # 🔥 新增：强制同步到WandB服务器
+                # 🔥 新增：确保数据提交到WandB服务器
                 try:
-                    wandb.sync()
-                    print(f"   ✅ WandB同步完成")
-                except Exception as sync_error:
-                    print(f"   ⚠️ WandB同步失败: {sync_error}")
+                    # 强制提交当前数据
+                    wandb.log({}, commit=True)
+                    print(f"   ✅ WandB数据提交完成")
+                except Exception as commit_error:
+                    print(f"   ⚠️ WandB提交失败: {commit_error}")
             
         except Exception as e:
             print(f"❌ 记录指标到wandb失败: {e}")
