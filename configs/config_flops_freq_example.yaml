@@ -1,0 +1,96 @@
+model:
+  pretrained_name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  num_labels: 10
+
+# 损失函数配置
+loss:
+  type: "cross_entropy"
+
+data:
+  train_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_train.jsonl"
+  val_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_test.jsonl"
+
+training:
+  epochs: 2
+  lr: 1e-5
+  weight_decay: 0.01
+  warmup_steps: 10
+  output_dir: "/mmu_mllm_hdd_2/madehua/model/qwen_classify/flops_freq_example"
+  logging_steps: 1
+  save_steps: 10
+  eval_steps: 5
+  save_hf_format: true
+  save_deepspeed_format: false
+  num_workers: 4
+  use_fused_adam: true
+  
+  # 最佳模型追踪配置
+  best_model_tracking:
+    enabled: true
+    metric: "overall_accuracy"
+    mode: "max"
+    save_best_only: true
+  
+  # 评估配置
+  evaluation:
+    partial_eval_during_training: true
+    full_eval_at_end: true
+    eval_best_model_only: true
+
+# 🔥 关键配置：监控频率 - 现在可以在yaml中设置MFU计算频率
+monitor:
+  freq:
+    # 所有频率都独立配置
+    training_log_freq: 50      # 训练指标记录频率
+    eval_log_freq: 1           # 评估指标记录频率
+    perf_log_freq: 100         # 性能指标记录频率
+    gpu_log_freq: 100          # GPU监控频率
+    flops_profile_freq: 100    # 🔥 MFU计算频率 (使用profiler) - 现在可以在yaml中设置！
+    local_save_freq: 1000      # 本地日志保存频率
+    progress_update_freq: 100   # 进度更新频率
+
+# DeepSpeed配置
+deepspeed:
+  config_file: "configs/ds_s2.json"
+  zero_stage: 2
+  bf16: true
+
+# Weights & Biases配置
+wandb:
+  enabled: true
+  project: "qwen-classification"
+  run_name: "flops_freq_example"
+  tags: ["qwen", "deepspeed", "classification", "flops_freq_example"]
+  notes: "测试flops_profile_freq配置功能"
+  log_dataset_metrics: false
+  log_overall_metrics: true
+
+# Legacy accelerate settings
+accelerate:
+  bf16: true
+
+# 使用说明
+# =============================================================================
+# 
+# 🔥 flops_profile_freq 配置说明：
+# 
+# 1. 功能：控制使用PyTorch Profiler计算MFU的频率
+# 2. 设置位置：monitor.freq.flops_profile_freq
+# 3. 默认值：500（如果未设置）
+# 
+# 推荐设置：
+# - 调试阶段：10-50（频繁计算，便于调试）
+# - 开发阶段：100-200（平衡精度和性能）
+# - 生产阶段：200-500（减少性能开销）
+# 
+# 注意事项：
+# - 每flops_profile_freq步会使用profiler进行精确的MFU计算
+# - 其他步骤使用基于实际FLOPs的估算MFU
+# - 建议与perf_log_freq保持一致或为其倍数
+# 
+# 示例配置：
+# - flops_profile_freq: 50   # 每50步精确计算MFU
+# - flops_profile_freq: 100  # 每100步精确计算MFU
+# - flops_profile_freq: 200  # 每200步精确计算MFU
+# 
+# ============================================================================= 

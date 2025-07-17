@@ -23,14 +23,12 @@ class DeepSpeedTrainer:
             from .utils.distributed import setup_nccl_timeout_env
             setup_nccl_timeout_env()
         
-        # 获取FLOPs profiling频率配置
-        flops_profile_freq = self.config.get('monitor', {}).get('freq', {}).get('flops_profile_freq', 500)
-        
         # 只在主进程创建完整的TrainingMonitor，非主进程使用DummyMonitor
         if self.dist_ctx.is_main_process:
             from training.utils.monitor import TrainingMonitor
-            self.monitor = TrainingMonitor(self.config['output_dir'], config, flops_profile_freq=flops_profile_freq)
-            print(f"✅ 主进程：创建完整TrainingMonitor（包含wandb），flops_profile_freq={flops_profile_freq}")
+            # 不再硬编码flops_profile_freq，让TrainingMonitor从配置文件中读取
+            self.monitor = TrainingMonitor(self.config['output_dir'], config)
+            print(f"✅ 主进程：创建完整TrainingMonitor（包含wandb）")
         else:
             from training.utils.monitor import DummyMonitor  
             self.monitor = DummyMonitor(self.config['output_dir'], config)
@@ -388,12 +386,13 @@ class DeepSpeedTrainer:
     
 
         
-    def evaluate(self, step=None, log_to_wandb=True):
+    def evaluate(self, step=None, log_to_wandb=True, return_results=False):
         """评估模型，统一使用多数据集评估逻辑
         
         Args:
             step: 当前步数，如果提供则用于最佳模型保存；否则使用self.current_step
             log_to_wandb: 是否记录到WandB，默认为True
+            return_results: 是否返回详细的评估结果，默认为False
         """
         current_step = step if step is not None else self.current_step
         
@@ -475,7 +474,8 @@ class DeepSpeedTrainer:
                 except Exception as wandb_error:
                     self.dist_ctx.print_main(f"⚠️  WandB记录失败: {wandb_error}")
             elif current_step is not None and not log_to_wandb:
-                self.dist_ctx.print_main(f"📊 评估完成但未记录到WandB (将由调用方合并记录)")
+                # 静默模式，不输出额外信息
+                pass
             else:
                 self.dist_ctx.print_main(f"📊 评估完成但未记录到WandB (step=None)")
             
@@ -494,7 +494,11 @@ class DeepSpeedTrainer:
             
             # 返回整体指标
             self.dist_ctx.print_main(f"✅ 评估结束 - 验证损失: {overall_loss:.4f}, 准确率: {overall_accuracy:.4f}")
-            return overall_loss, overall_accuracy
+            
+            if return_results:
+                return overall_loss, overall_accuracy, eval_results
+            else:
+                return overall_loss, overall_accuracy
             
         except Exception as eval_error:
             # 简化的错误处理
@@ -724,6 +728,60 @@ class DeepSpeedTrainer:
                     is_eval_step = (effective_step % eval_steps == 0)
                     # 在eval步骤时skip_wandb=True，避免重复记录到wandb
                     self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, skip_wandb=is_eval_step)
+                    
+                    # 🔥 新增：在非eval步骤时，确保training指标被记录到WandB
+                    if not is_eval_step and self.dist_ctx.is_main_process:
+                        # 构建training数据
+                        training_data = {
+                            "training/loss": float(aggregated_loss),
+                            "training/lr": float(current_lr), 
+                            "training/epoch": float(epoch),
+                            "training/grad_norm": float(grad_norm_value),
+                            "step": int(effective_step)
+                        }
+                        
+                        # 检查是否需要添加性能指标
+                        should_log_perf = (effective_step % self.monitor.freq['perf_log_freq'] == 0)
+                        if should_log_perf and hasattr(self.monitor, 'step_start_time'):
+                            current_time = time.time()
+                            step_time = current_time - self.monitor.step_start_time
+                            if step_time > 0:
+                                training_data.update({
+                                    "perf/step_time": float(step_time),
+                                    "perf/steps_per_second": float(1.0 / step_time),
+                                })
+                                
+                                # 添加MFU相关指标（如果可用）
+                                if (self.monitor.model_ref is not None and 
+                                    attention_mask is not None and
+                                    self.monitor.actual_flops is not None):
+                                    from .utils.monitor import calculate_mfu_with_profiler, get_gpu_peak_flops
+                                    current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
+                                    actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
+                                    
+                                    # 计算MFU
+                                    if effective_step % self.monitor.flops_profile_freq == 0:
+                                        # 使用profiler计算MFU（更精确）
+                                        current_mfu = calculate_mfu_with_profiler(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time)
+                                    else:
+                                        # 使用估算的MFU（基于实际FLOPs）
+                                        actual_flops_per_second = self.monitor.actual_flops / step_time
+                                        peak_flops_per_second = get_gpu_peak_flops()
+                                        current_mfu = actual_flops_per_second / peak_flops_per_second
+                                        current_mfu = min(current_mfu, 1.0)  # 限制在100%以内
+                                    
+                                    training_data.update({
+                                        "perf/mfu": float(current_mfu),
+                                        "perf/mfu_percent": float(current_mfu * 100),
+                                        "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
+                                        "perf/samples_per_second": float(actual_batch_size / step_time),
+                                        "perf/actual_flops": float(self.monitor.actual_flops),
+                                        "perf/actual_seq_length": float(current_seq_length),
+                                        "perf/flops_per_second": float(self.monitor.actual_flops / step_time),
+                                    })
+                        
+                        # 记录training指标到WandB
+                        self.monitor.log_metrics(training_data, effective_step, commit=True)
                 
                     # 详细日志记录（基于有效步数判断输出频率）
                     if effective_step % logging_steps == 0:
@@ -768,7 +826,7 @@ class DeepSpeedTrainer:
                         try:
                             # 🔥 关键修复：获取eval数据但不让evaluate方法记录到wandb
                             # 传入effective_step，但设置log_to_wandb=False避免重复记录
-                            eval_loss, eval_accuracy = self.evaluate(step=effective_step, log_to_wandb=False)  # 传入effective_step避免在evaluate中记录
+                            eval_loss, eval_accuracy, eval_results = self.evaluate(step=effective_step, log_to_wandb=False, return_results=True)  # 传入effective_step避免在evaluate中记录
                             
                             # 🔥 获取当前训练数据，与eval数据合并记录
                             # 构建完整的training数据（包括性能指标）
@@ -793,27 +851,59 @@ class DeepSpeedTrainer:
                                 # 添加MFU相关指标（如果可用）
                                 if (self.monitor.model_ref is not None and 
                                     attention_mask is not None):
-                                    from .utils.monitor import calculate_mfu_with_profiler
+                                    from .utils.monitor import calculate_mfu_with_profiler, get_gpu_peak_flops
                                     current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
                                     actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-                                    current_mfu = calculate_mfu_with_profiler(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time)
+                                    
+                                    # 计算MFU
+                                    if effective_step % self.monitor.flops_profile_freq == 0:
+                                        # 使用profiler计算MFU（更精确）
+                                        current_mfu = calculate_mfu_with_profiler(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time)
+                                    else:
+                                        # 使用估算的MFU（基于实际FLOPs）
+                                        if self.monitor.actual_flops is not None and step_time > 0:
+                                            actual_flops_per_second = self.monitor.actual_flops / step_time
+                                            peak_flops_per_second = get_gpu_peak_flops()
+                                            current_mfu = actual_flops_per_second / peak_flops_per_second
+                                            current_mfu = min(current_mfu, 1.0)  # 限制在100%以内
+                                        else:
+                                            current_mfu = 0.0
                                     
                                     current_training_data.update({
                                         "perf/mfu": float(current_mfu),
                                         "perf/mfu_percent": float(current_mfu * 100),
                                         "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
                                         "perf/samples_per_second": float(actual_batch_size / step_time),
+                                        "perf/actual_flops": float(self.monitor.actual_flops) if self.monitor.actual_flops is not None else 0.0,
+                                        "perf/actual_seq_length": float(current_seq_length),
+                                        "perf/flops_per_second": float(self.monitor.actual_flops / step_time) if self.monitor.actual_flops is not None and step_time > 0 else 0.0,
                                     })
                             
-                            # 准备eval数据
+                            # 准备eval数据 - 包含整体指标和每个数据集的详细指标
                             eval_data = {
                                 "eval/overall_loss": float(eval_loss),
                                 "eval/overall_accuracy": float(eval_accuracy),
                             }
                             
+                            # 添加每个数据集的详细指标（如果存在）
+                            if eval_results and 'dataset_metrics' in eval_results and eval_results['dataset_metrics']:
+                                for dataset_name, metrics in eval_results['dataset_metrics'].items():
+                                    eval_data[f"eval/{dataset_name}_loss"] = float(metrics['loss'])
+                                    eval_data[f"eval/{dataset_name}_accuracy"] = float(metrics['accuracy'])
+                                    eval_data[f"eval/{dataset_name}_samples"] = int(metrics['samples'])
+                                    eval_data[f"eval/{dataset_name}_correct"] = int(metrics['correct'])
+                            
                             # 🔥 合并training和eval数据，一次性记录
                             combined_data = {**current_training_data, **eval_data}
                             combined_data["step"] = int(effective_step)
+                            
+                            # 确保所有指标都有正确的分组前缀
+                            # 添加指标分组标记，帮助WandB正确显示
+                            combined_data["_wandb"] = {
+                                "training_metrics": list(current_training_data.keys()),
+                                "eval_metrics": list(eval_data.keys()),
+                                "combined_step": effective_step
+                            }
                             
                             # 一次性记录所有数据
                             self.monitor.log_metrics(combined_data, effective_step, commit=True)
@@ -822,6 +912,7 @@ class DeepSpeedTrainer:
                                 print(f"✅ 训练+评估指标已合并记录到WandB (step={effective_step})")
                                 print(f"   训练指标: {list(current_training_data.keys())}")
                                 print(f"   评估指标: {list(eval_data.keys())}")
+                                print(f"   总指标数: {len(combined_data)}")
                             
                         except Exception as eval_error:
                             if self.dist_ctx.is_main_process:

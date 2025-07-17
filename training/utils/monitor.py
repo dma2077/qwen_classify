@@ -462,7 +462,7 @@ def get_gpu_stats():
 class TrainingMonitor:
     """训练监控器（支持wandb）"""
     
-    def __init__(self, output_dir: str, config: Dict = None, log_file: str = "training_log.json", flops_profile_freq: int = 500):
+    def __init__(self, output_dir: str, config: Dict = None, log_file: str = "training_log.json", flops_profile_freq: int = None):
         self.output_dir = output_dir
         self.log_file = os.path.join(output_dir, log_file)
         self.step_logs = []
@@ -471,7 +471,7 @@ class TrainingMonitor:
         self.step_start_time = None
         self.config = config or {}
         
-        # FLOPs profiling频率配置
+        # FLOPs profiling频率配置 - 如果未提供则从配置文件读取
         self.flops_profile_freq = flops_profile_freq
         
         # 初始化监控频率配置
@@ -512,13 +512,19 @@ class TrainingMonitor:
             'eval_log_freq': freq_config.get('eval_log_freq', 1),                    # 评估指标记录频率
         }
         
-        # flops_profile_freq独立配置
-        if hasattr(self, 'flops_profile_freq'):
-            # 构造函数已经设置了flops_profile_freq，保持不变
-            pass
+        # flops_profile_freq配置 - 优先从配置文件读取，如果没有则使用构造函数传入的值或默认值
+        config_flops_profile_freq = freq_config.get('flops_profile_freq')
+        if config_flops_profile_freq is not None:
+            # 配置文件中有设置，使用配置文件的值
+            self.flops_profile_freq = config_flops_profile_freq
+            print(f"📊 从配置文件读取flops_profile_freq: {self.flops_profile_freq}")
+        elif self.flops_profile_freq is not None:
+            # 构造函数传入了值，保持不变
+            print(f"📊 使用构造函数传入的flops_profile_freq: {self.flops_profile_freq}")
         else:
-            # 从配置中获取flops_profile_freq，如果没有则使用默认值
-            self.flops_profile_freq = freq_config.get('flops_profile_freq', 500)
+            # 都没有设置，使用默认值
+            self.flops_profile_freq = 500
+            print(f"📊 使用默认flops_profile_freq: {self.flops_profile_freq}")
         
         # 打印监控频率配置
         print(f"🔧 监控频率配置:")
@@ -700,7 +706,7 @@ class TrainingMonitor:
         self.model_ref = model
     
     def _define_eval_metrics(self):
-        """定义eval指标，确保wandb正确识别和显示"""
+        """定义eval指标，确保wandb正确识别和显示 - 改进版本"""
         try:
             if not self.use_wandb or not self._is_main_process():
                 return
@@ -711,11 +717,36 @@ class TrainingMonitor:
             
             # 🔥 关键修复：分别定义training和eval指标，使用统一的x轴
             wandb.define_metric("step")
+            
+            # 定义训练指标组
+            wandb.define_metric("training/loss", step_metric="step", summary="min")
+            wandb.define_metric("training/lr", step_metric="step", summary="last")
+            wandb.define_metric("training/epoch", step_metric="step", summary="last")
+            wandb.define_metric("training/grad_norm", step_metric="step", summary="last")
+            
+            # 定义评估指标组
+            wandb.define_metric("eval/overall_loss", step_metric="step", summary="min")
+            wandb.define_metric("eval/overall_accuracy", step_metric="step", summary="max")
+            wandb.define_metric("eval/overall_samples", step_metric="step", summary="last")
+            wandb.define_metric("eval/overall_correct", step_metric="step", summary="last")
+            
+            # 定义性能指标组
+            wandb.define_metric("perf/step_time", step_metric="step", summary="mean")
+            wandb.define_metric("perf/steps_per_second", step_metric="step", summary="mean")
+            wandb.define_metric("perf/mfu", step_metric="step", summary="mean")
+            wandb.define_metric("perf/mfu_percent", step_metric="step", summary="mean")
+            wandb.define_metric("perf/tokens_per_second", step_metric="step", summary="mean")
+            wandb.define_metric("perf/samples_per_second", step_metric="step", summary="mean")
+            wandb.define_metric("perf/actual_flops", step_metric="step", summary="last")
+            wandb.define_metric("perf/actual_seq_length", step_metric="step", summary="last")
+            wandb.define_metric("perf/flops_per_second", step_metric="step", summary="mean")
+            
+            # 使用通配符定义其他可能的指标
             wandb.define_metric("training/*", step_metric="step")
             wandb.define_metric("eval/*", step_metric="step")
             wandb.define_metric("perf/*", step_metric="step")
             
-            print("✅ 已定义统一x轴：training/*, eval/*, perf/* 指标使用'step'")
+            print("✅ 已定义详细指标分组：training/*, eval/*, perf/* 指标使用统一的'step'轴")
             
         except Exception as e:
             print(f"⚠️  定义eval指标失败: {e}")
@@ -931,14 +962,22 @@ class TrainingMonitor:
                         else:
                             current_seq_length = self.seq_length
                         
-                        # 使用profiler计算MFU
+                        # 使用profiler计算MFU - 每次记录性能指标时都计算
                         if step % self.flops_profile_freq == 0:
-                            # 每flops_profile_freq步使用profiler计算MFU
+                            # 每flops_profile_freq步使用profiler计算MFU（更精确）
                             mfu = calculate_mfu_with_profiler(self.model_ref, self.batch_size, current_seq_length, step_time)
                             print(f"🔍 步骤 {step}: 使用profiler计算MFU = {mfu:.4f}")
                         else:
-                            # 其他步骤使用缓存的MFU值或返回0
-                            mfu = 0.0
+                            # 其他步骤使用估算的MFU（基于实际FLOPs）
+                            if self.actual_flops is not None and step_time > 0:
+                                # 使用实际FLOPs计算MFU
+                                actual_flops_per_second = self.actual_flops / step_time
+                                peak_flops_per_second = get_gpu_peak_flops()
+                                mfu = actual_flops_per_second / peak_flops_per_second
+                                mfu = min(mfu, 1.0)  # 限制在100%以内
+                            else:
+                                # 如果没有实际FLOPs数据，返回0
+                                mfu = 0.0
                         
                         # 添加性能相关指标到perf组
                         current_flops = self.actual_flops if self.actual_flops is not None else 0.0

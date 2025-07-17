@@ -1,0 +1,68 @@
+model:
+  pretrained_name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  num_labels: 10
+
+# 损失函数配置
+loss:
+  type: "cross_entropy"
+
+data:
+  train_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_train.jsonl"
+  val_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_test.jsonl"
+
+training:
+  epochs: 2  # 短训练用于测试
+  lr: 1e-5
+  weight_decay: 0.01
+  warmup_steps: 10
+  output_dir: "/mmu_mllm_hdd_2/madehua/model/qwen_classify/mfu_flops_test"
+  logging_steps: 1  # 每步都记录
+  save_steps: 10
+  eval_steps: 5  # 频繁评估
+  save_hf_format: true
+  save_deepspeed_format: false
+  num_workers: 4
+  use_fused_adam: true
+  
+  # 最佳模型追踪配置
+  best_model_tracking:
+    enabled: true
+    metric: "overall_accuracy"
+    mode: "max"
+    save_best_only: true
+  
+  # 评估配置
+  evaluation:
+    partial_eval_during_training: true
+    full_eval_at_end: true
+    eval_best_model_only: true
+
+# 🔥 关键配置：监控频率 - 确保MFU和FLOPs指标能正确显示
+monitor:
+  freq:
+    # 所有频率都独立配置，确保指标正常显示
+    training_log_freq: 1    # 每步记录训练指标
+    perf_log_freq: 2        # 每2步记录性能指标（包括MFU和FLOPs）
+    gpu_log_freq: 3         # 每3步记录GPU指标
+    flops_profile_freq: 4   # 每4步使用profiler计算MFU（更精确）
+    local_save_freq: 5      # 每5步保存本地日志
+
+# DeepSpeed配置
+deepspeed:
+  config_file: "configs/ds_s2.json"
+  zero_stage: 2
+  bf16: true
+
+# Weights & Biases配置 - 专门用于测试MFU和FLOPs指标
+wandb:
+  enabled: true
+  project: "qwen-classification"
+  run_name: "mfu_flops_test"
+  tags: ["qwen", "deepspeed", "classification", "mfu_test", "flops_test"]
+  notes: "测试MFU和FLOPs指标显示功能"
+  log_dataset_metrics: false  # 单数据集
+  log_overall_metrics: true
+
+# Legacy accelerate settings
+accelerate:
+  bf16: true 
