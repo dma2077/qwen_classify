@@ -76,6 +76,9 @@ class DeepSpeedTrainer:
         self.full_eval_at_end = self.eval_config.get('full_eval_at_end', True)
         self.eval_best_model_only = self.eval_config.get('eval_best_model_only', True)
         
+        # 缓存MFU计算结果，避免重复计算
+        self._mfu_cache = {}
+        
     def setup_model(self, model, train_loader, val_loader, optimizer, lr_scheduler):
         """设置模型和相关组件"""
         self.model = model
@@ -98,6 +101,541 @@ class DeepSpeedTrainer:
         # 设置monitor的model引用用于MFU计算
         self.monitor.set_model_ref(self.model)
         
+    def _get_deepspeed_config(self):
+        """获取DeepSpeed配置"""
+        deepspeed_config = self.config.get('deepspeed', {})
+        if isinstance(deepspeed_config, str):
+            with open(deepspeed_config, 'r') as f:
+                deepspeed_config = json.load(f)
+        return deepspeed_config
+        
+    def _calculate_training_stats(self):
+        """计算训练统计信息"""
+        deepspeed_config = self._get_deepspeed_config()
+        
+        micro_batch_size_per_gpu = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
+        gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
+        train_batch_size = deepspeed_config.get('train_batch_size', 32)
+        
+        dataloader_steps_per_epoch = len(self.train_loader)
+        effective_steps_per_epoch = dataloader_steps_per_epoch // gradient_accumulation_steps
+        total_effective_steps = effective_steps_per_epoch * self.config['training']['num_epochs']
+        
+        dataset_size = len(self.train_loader.dataset)
+        samples_per_gpu = dataloader_steps_per_epoch * micro_batch_size_per_gpu
+        
+        return {
+            'micro_batch_size_per_gpu': micro_batch_size_per_gpu,
+            'gradient_accumulation_steps': gradient_accumulation_steps,
+            'train_batch_size': train_batch_size,
+            'dataloader_steps_per_epoch': dataloader_steps_per_epoch,
+            'effective_steps_per_epoch': effective_steps_per_epoch,
+            'total_effective_steps': total_effective_steps,
+            'dataset_size': dataset_size,
+            'samples_per_gpu': samples_per_gpu
+        }
+        
+    def _print_training_config(self, stats):
+        """打印训练配置信息"""
+        if not self.dist_ctx.is_main_process:
+            return
+            
+        print("="*80)
+        print("🚀 训练配置信息")
+        print("="*80)
+        print(f"📊 数据集配置:")
+        print(f"  • 总数据集大小: {stats['dataset_size']:,}")
+        print(f"  • 每GPU处理样本数: {stats['samples_per_gpu']:,}")
+        print(f"📦 批次配置:")
+        print(f"  • 每GPU微批次大小: {stats['micro_batch_size_per_gpu']}")
+        print(f"  • 梯度累积步数: {stats['gradient_accumulation_steps']}")
+        print(f"  • 总有效批次大小: {stats['train_batch_size']}")
+        print(f"📈 步数统计:")
+        print(f"  • 每GPU DataLoader步数: {stats['dataloader_steps_per_epoch']:,}")
+        print(f"  • 有效训练步数每epoch: {stats['effective_steps_per_epoch']:,}")
+        print(f"  • 总有效训练步数: {stats['total_effective_steps']:,}")
+        print("="*80)
+        
+    def _prepare_batch_data(self, batch):
+        """准备批次数据"""
+        inputs = batch["input_ids"].to(self.dist_ctx.device)
+        attention_mask = batch["attention_mask"].to(self.dist_ctx.device)
+        pixel_values = batch["pixel_values"].to(self.dist_ctx.device)
+        labels = batch["labels"].to(self.dist_ctx.device)
+        
+        forward_kwargs = {
+            "input_ids": inputs,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
+            "labels": labels
+        }
+        
+        # 检查并添加image_grid_thw参数
+        if "image_grid_thw" in batch:
+            forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(self.dist_ctx.device)
+        
+        # 添加多数据集支持的参数
+        if "dataset_names" in batch:
+            forward_kwargs["dataset_names"] = batch["dataset_names"]
+        if "num_classes_list" in batch:
+            forward_kwargs["num_classes_list"] = batch["num_classes_list"]
+            
+        return forward_kwargs, inputs, attention_mask, labels
+        
+    def _calculate_mfu(self, effective_step, inputs, attention_mask, step_time):
+        """计算MFU（Model FLOPs Utilization）"""
+        if not (self.monitor.model_ref is not None and 
+                attention_mask is not None and
+                self.monitor.actual_flops is not None):
+            return None
+            
+        # 创建缓存键
+        cache_key = f"{effective_step}_{inputs.size(0)}_{attention_mask.size(1)}"
+        if cache_key in self._mfu_cache:
+            return self._mfu_cache[cache_key]
+            
+        from .utils.monitor import calculate_mfu_with_profiler, get_gpu_peak_flops
+        current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
+        actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
+        
+        # 计算MFU
+        if effective_step % self.monitor.flops_profile_freq == 0:
+            # 使用profiler计算MFU（更精确）
+            current_mfu = calculate_mfu_with_profiler(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time)
+        else:
+            # 使用估算的MFU（基于实际FLOPs）
+            actual_flops_per_second = self.monitor.actual_flops / step_time
+            peak_flops_per_second = get_gpu_peak_flops()
+            current_mfu = actual_flops_per_second / peak_flops_per_second
+            current_mfu = min(current_mfu, 1.0)  # 限制在100%以内
+            
+        # 缓存结果
+        self._mfu_cache[cache_key] = current_mfu
+        return current_mfu
+        
+    def _build_training_metrics(self, effective_step, epoch, aggregated_loss, current_lr, grad_norm_value, 
+                               inputs, attention_mask, step_time):
+        """构建训练指标"""
+        training_data = {
+            "training/loss": float(aggregated_loss),
+            "training/lr": float(current_lr), 
+            "training/epoch": float(epoch),
+            "training/grad_norm": float(grad_norm_value),
+            "step": int(effective_step)
+        }
+        
+        # 检查是否需要添加性能指标
+        should_log_perf = (effective_step % self.monitor.freq['perf_log_freq'] == 0)
+        if should_log_perf and step_time > 0:
+            training_data.update({
+                "perf/step_time": float(step_time),
+                "perf/steps_per_second": float(1.0 / step_time),
+            })
+            
+            # 添加MFU相关指标
+            current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, step_time)
+            if current_mfu is not None:
+                current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
+                actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
+                
+                training_data.update({
+                    "perf/mfu": float(current_mfu),
+                    "perf/mfu_percent": float(current_mfu * 100),
+                    "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
+                    "perf/samples_per_second": float(actual_batch_size / step_time),
+                    "perf/actual_flops": float(self.monitor.actual_flops),
+                    "perf/actual_seq_length": float(current_seq_length),
+                    "perf/flops_per_second": float(self.monitor.actual_flops / step_time),
+                })
+                
+        return training_data
+        
+    def _handle_effective_step(self, effective_step, epoch, batch_idx, aggregated_loss, current_lr, 
+                              grad_norm_value, inputs, attention_mask, step_time, is_eval_step):
+        """处理有效步骤的逻辑"""
+        # 降低进度条更新频率以减少开销（每10个有效步骤更新一次）
+        if effective_step % 10 == 0:
+            self._update_progress_bar(effective_step, aggregated_loss, current_lr, epoch, batch_idx)
+        
+        # 记录训练指标
+        self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, skip_wandb=is_eval_step)
+        
+        # 在非eval步骤时，确保training指标被记录到WandB
+        if not is_eval_step and self.dist_ctx.is_main_process:
+            training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
+                                                       grad_norm_value, inputs, attention_mask, step_time)
+            self.monitor.log_metrics(training_data, effective_step, commit=True)
+            
+    def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
+        """更新进度条"""
+        if hasattr(self, 'pbar'):
+            self.pbar.update(10)  # 一次更新10步
+            self.pbar.set_postfix({
+                'loss': f'{aggregated_loss:.4f}',
+                'lr': f'{current_lr:.2e}',
+                'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
+            })
+            
+    def _handle_evaluation_step(self, effective_step, epoch, aggregated_loss, current_lr, grad_norm_value, 
+                               inputs, attention_mask, step_time):
+        """处理评估步骤"""
+        # 暂时刷新进度条以避免输出冲突
+        if hasattr(self, 'pbar'):
+            self.pbar.clear()
+        
+        # 添加评估异常处理，避免NCCL超时导致训练中断
+        try:
+            # 获取eval数据但不让evaluate方法记录到wandb
+            eval_loss, eval_accuracy, eval_results = self.evaluate(step=effective_step, log_to_wandb=False, return_results=True)
+            
+            # 构建完整的training数据（包括性能指标）
+            current_training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
+                                                               grad_norm_value, inputs, attention_mask, step_time)
+            
+            # 准备eval数据
+            eval_data = self._build_eval_metrics(eval_loss, eval_accuracy, eval_results)
+            
+            # 合并training和eval数据，一次性记录
+            combined_data = {**current_training_data, **eval_data}
+            combined_data["step"] = int(effective_step)
+            
+            # 确保所有指标都有正确的分组前缀
+            combined_data["_wandb"] = {
+                "training_metrics": list(current_training_data.keys()),
+                "eval_metrics": list(eval_data.keys()),
+                "combined_step": effective_step
+            }
+            
+            # 一次性记录所有数据
+            self.monitor.log_metrics(combined_data, effective_step, commit=True)
+            
+            if self.dist_ctx.is_main_process:
+                print(f"✅ 训练+评估指标已合并记录到WandB (step={effective_step})")
+                
+        except Exception as eval_error:
+            if self.dist_ctx.is_main_process:
+                print(f"⚠️  评估过程出错: {eval_error}")
+                print("⚠️  跳过本次评估，继续训练...")
+            # 记录一个占位符的eval结果，避免wandb图表中断
+            self._log_placeholder_eval(effective_step, aggregated_loss, current_lr)
+        
+        self.model.train()
+        # 重新显示进度条
+        if hasattr(self, 'pbar'):
+            self.pbar.refresh()
+            
+    def _build_eval_metrics(self, eval_loss, eval_accuracy, eval_results):
+        """构建评估指标"""
+        eval_data = {
+            "eval/overall_loss": float(eval_loss),
+            "eval/overall_accuracy": float(eval_accuracy),
+        }
+        
+        # 添加每个数据集的详细指标（如果存在）
+        if eval_results and 'dataset_metrics' in eval_results and eval_results['dataset_metrics']:
+            for dataset_name, metrics in eval_results['dataset_metrics'].items():
+                eval_data[f"eval/{dataset_name}_loss"] = float(metrics['loss'])
+                eval_data[f"eval/{dataset_name}_accuracy"] = float(metrics['accuracy'])
+                eval_data[f"eval/{dataset_name}_samples"] = int(metrics['samples'])
+                eval_data[f"eval/{dataset_name}_correct"] = int(metrics['correct'])
+                
+        return eval_data
+        
+    def _log_placeholder_eval(self, effective_step, aggregated_loss, current_lr):
+        """记录占位符评估结果"""
+        try:
+            placeholder_eval_data = {
+                "training/loss": float(aggregated_loss),
+                "training/lr": float(current_lr),
+                "eval/overall_loss": 999.0,  # 使用明显的占位符值
+                "eval/overall_accuracy": 0.0,
+                "eval/evaluation_failed": 1.0,  # 标记评估失败
+                "step": int(effective_step)
+            }
+            self.monitor.log_metrics(placeholder_eval_data, effective_step)
+        except:
+            pass  # 如果连记录都失败，就完全跳过
+            
+    def _handle_logging_step(self, effective_step, aggregated_loss, grad_norm_value, current_lr, epoch, batch_idx, inputs, attention_mask):
+        """处理日志记录步骤"""
+        # 记录各数据集的指标
+        self._log_dataset_metrics(effective_step, is_eval=False)
+        
+        # 基础日志信息
+        log_message = (
+            f"Step {effective_step:,} | "
+            f"Loss: {aggregated_loss:.4f} | "
+            f"Grad Norm: {grad_norm_value:.4f} | "
+            f"LR: {current_lr:.2e} | "
+            f"Epoch: {epoch + batch_idx/len(self.train_loader):.2f}"
+        )
+        
+        # 如果进行了实时FLOPs测量，添加MFU信息
+        if hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
+            current_time = time.time()
+            actual_step_time = current_time - self.monitor.step_start_time
+            
+            current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, actual_step_time)
+            if current_mfu is not None:
+                log_message += f" | MFU: {current_mfu:.1%}"
+                log_message += " [📊实时测量]"
+        
+        # 打印日志信息
+        if self.dist_ctx.is_main_process and hasattr(self, 'pbar'):
+            self.pbar.write(log_message)
+            
+    def _handle_save_step(self, effective_step):
+        """处理保存步骤"""
+        if not self.save_best_only:  # 只有在未启用"仅保存最佳模型"时才保存常规检查点
+            if hasattr(self, 'pbar'):
+                self.pbar.clear()
+            self.save_checkpoint(effective_step)
+            if hasattr(self, 'pbar'):
+                self.pbar.refresh()
+        elif self.dist_ctx.is_main_process:  # 如果启用了仅保存最佳模型，只显示信息
+            if hasattr(self, 'pbar'):
+                self.pbar.write(f"💡 仅保存最佳模型模式已启用，跳过步骤 {effective_step} 的常规检查点保存")
+                
+    def _train_epoch(self, epoch, stats):
+        """训练一个epoch"""
+        self.current_epoch = epoch
+        self.model.train()
+        
+        # 为分布式采样器设置epoch（确保每个epoch的shuffle正确）
+        if hasattr(self.train_loader.sampler, 'set_epoch'):
+            self.train_loader.sampler.set_epoch(epoch)
+        
+        epoch_loss = 0
+        epoch_start_time = time.time()
+        effective_step = epoch * stats['effective_steps_per_epoch']
+        
+        for batch_idx, batch in enumerate(self.train_loader):
+            self.current_step += 1
+            
+            # 准备批次数据
+            forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(batch)
+            
+            # 前向+反向传播
+            outputs = self.model(**forward_kwargs)
+            loss = outputs.loss
+            self.model.backward(loss)
+            
+            # 聚合多卡loss（在分布式训练中）
+            aggregated_loss = self._aggregate_loss(loss)
+            epoch_loss += aggregated_loss
+            
+            # 优化数据集指标更新 - 降低频率以减少开销
+            if self.enable_dataset_metrics and (self.current_step % 10 == 0):
+                self._update_dataset_metrics(batch, outputs, aggregated_loss)
+            
+            # 获取梯度范数和更新参数
+            grad_norm = self.model.get_global_grad_norm()
+            self.model.step()
+            
+            # 处理梯度范数
+            grad_norm_value = self._process_grad_norm(grad_norm)
+            current_lr = self.optimizer.param_groups[0]['lr']
+            
+            # 检查是否是有效步骤（完成了梯度累积）
+            is_effective_step = self.current_step % stats['gradient_accumulation_steps'] == 0
+            
+            if is_effective_step:
+                effective_step += 1
+                
+                # 计算步骤时间
+                current_time = time.time()
+                step_time = current_time - self.monitor.step_start_time if hasattr(self.monitor, 'step_start_time') else 0.0
+                
+                # 判断是否为评估步骤
+                is_eval_step = (effective_step % self.config['eval_steps'] == 0)
+                
+                # 处理有效步骤
+                self._handle_effective_step(effective_step, epoch, batch_idx, aggregated_loss, current_lr, 
+                                          grad_norm_value, inputs, attention_mask, step_time, is_eval_step)
+                
+                # 详细日志记录
+                if effective_step % self.config['logging_steps'] == 0:
+                    self._handle_logging_step(effective_step, aggregated_loss, grad_norm_value, current_lr, 
+                                            epoch, batch_idx, inputs, attention_mask)
+                
+                # 定期评估
+                if effective_step > 0 and effective_step % self.config['eval_steps'] == 0:
+                    self._handle_evaluation_step(effective_step, epoch, aggregated_loss, current_lr, 
+                                               grad_norm_value, inputs, attention_mask, step_time)
+                
+                # 定期保存检查点
+                if effective_step > 0 and effective_step % self.config['save_steps'] == 0:
+                    self._handle_save_step(effective_step)
+        
+        # Epoch结束统计
+        epoch_time = time.time() - epoch_start_time
+        avg_loss = epoch_loss / len(self.train_loader)
+        self.monitor.log_epoch(epoch, avg_loss, epoch_time, effective_step)
+        
+        # 输出epoch统计信息
+        epoch_message = (
+            f"📊 Epoch {epoch+1}/{self.config['training']['num_epochs']} 完成 | "
+            f"平均损失: {avg_loss:.4f} | "
+            f"耗时: {epoch_time:.2f}秒 | "
+            f"有效步数: {effective_step:,}"
+        )
+        if self.dist_ctx.is_main_process and hasattr(self, 'pbar'):
+            self.pbar.write(epoch_message)
+            
+        return effective_step
+        
+    def _process_grad_norm(self, grad_norm):
+        """处理梯度范数"""
+        if grad_norm is None:
+            return 0.0
+        elif hasattr(grad_norm, 'item'):
+            return float(grad_norm.item())
+        else:
+            return float(grad_norm)
+            
+    def train(self):
+        """训练模型"""
+        self.dist_ctx.print_main("开始训练...")
+        self.monitor.start_training()
+        
+        # 计算训练统计信息
+        stats = self._calculate_training_stats()
+        
+        # 打印训练配置信息
+        self._print_training_config(stats)
+        
+        # 创建进度条（基于有效训练步数）
+        self.pbar = tqdm(total=stats['total_effective_steps'], desc="Training Steps", disable=not self.dist_ctx.is_main_process)
+        
+        # 训练循环
+        for epoch in range(self.config['training']['num_epochs']):
+            effective_step = self._train_epoch(epoch, stats)
+        
+        self.pbar.close()
+        
+        # 训练结束处理
+        self._finish_training(effective_step)
+        
+    def _finish_training(self, effective_step):
+        """完成训练"""
+        # 训练结束前进行最终评估
+        if self.dist_ctx.is_main_process:
+            print("\n🎯 训练即将完成，进行最终评估...")
+        eval_loss, eval_accuracy = self.evaluate(step=effective_step)
+        
+        # 保存最终检查点（如果未启用仅保存最佳模型）
+        if not self.save_best_only:
+            if self.dist_ctx.is_main_process:
+                print(f"💾 保存最终检查点...")
+            self.save_checkpoint(effective_step)
+        elif self.dist_ctx.is_main_process:
+            print(f"💡 仅保存最佳模型模式已启用，跳过最终检查点保存")
+        
+        # 进行完整评估（在最佳模型上）
+        if self.full_eval_at_end:
+            self.full_evaluation_on_best_model()
+        
+        if self.dist_ctx.is_main_process:
+            print("🎉 训练完成！")
+            print(f"📊 最终评估结果 - 损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
+            if self.best_model_enabled:
+                print(f"🏆 最佳模型 - {self.best_metric_name}: {self.best_metric_value:.4f} (步骤 {self.best_model_step})")
+                print(f"🏆 最佳模型路径: {self.best_model_path}")
+        
+        # 确保最终评估结果被记录到WandB
+        self._log_final_evaluation(effective_step, eval_loss, eval_accuracy)
+        
+        # 训练结束后进行最终清理
+        if self.save_best_only and self.dist_ctx.is_main_process:
+            self.dist_ctx.print_main("🧹 进行最终检查点清理...")
+            self._cleanup_old_best_models()
+        
+        self.monitor.finish_training()
+        
+    def _log_final_evaluation(self, effective_step, eval_loss, eval_accuracy):
+        """记录最终评估结果"""
+        try:
+            final_eval_data = {
+                "eval/final_overall_loss": eval_loss,
+                "eval/final_overall_accuracy": eval_accuracy,
+                "eval/final_evaluation": 1.0  # 标记这是最终评估
+            }
+            self.monitor.log_metrics(final_eval_data, effective_step, commit=True)
+            self.dist_ctx.print_main(f"✅ 最终评估结果已记录到WandB")
+        except Exception as final_eval_error:
+            self.dist_ctx.print_main(f"⚠️ 最终评估WandB记录失败: {final_eval_error}")
+        self.monitor.save_logs()
+
+    def _update_best_model(self, eval_results, step):
+        """更新最佳模型"""
+        if not self.best_model_enabled:
+            return False
+        
+        # 获取当前指标值
+        if self.best_metric_name == 'overall_accuracy':
+            current_value = eval_results.get('overall_accuracy', 0.0)
+        elif self.best_metric_name == 'overall_loss':
+            current_value = eval_results.get('overall_loss', float('inf'))
+        else:
+            # 支持数据集特定指标，如 'food101_accuracy'
+            if 'dataset_metrics' in eval_results:
+                for dataset_name, metrics in eval_results['dataset_metrics'].items():
+                    metric_key = self.best_metric_name.replace(f'{dataset_name}_', '')
+                    if self.best_metric_name.startswith(dataset_name) and metric_key in metrics:
+                        current_value = metrics[metric_key]
+                        break
+                else:
+                    current_value = eval_results.get('overall_accuracy', 0.0)  # 默认使用overall_accuracy
+            else:
+                current_value = eval_results.get('overall_accuracy', 0.0)
+        
+        # 检查是否是最佳模型
+        if self._is_better_metric(current_value, self.best_metric_value):
+            self.best_metric_value = current_value
+            self.best_model_step = step
+            
+            # 保存最佳模型
+            self.save_checkpoint(step, is_best=True)
+            
+            # 清理旧的最佳模型（如果启用了仅保存最佳模型）
+            if self.save_best_only:
+                self._cleanup_old_best_models()
+            
+            # 记录到wandb
+            self.monitor.log_metrics({
+                'best_model_step': step,
+                f'best_{self.best_metric_name}': current_value
+            }, step)
+            
+            self.dist_ctx.print_main(
+                f"🏆 发现更好模型! {self.best_metric_name}: {current_value:.4f} "
+                f"(步骤 {step})"
+            )
+            return True
+        
+        return False
+    
+    def _aggregate_loss(self, loss):
+        """在分布式训练中聚合loss"""
+        if self.dist_ctx.world_size <= 1:
+            return loss.item()
+        
+        try:
+            import torch.distributed as dist
+            # 将当前GPU的loss广播到所有进程并求平均
+            loss_tensor = torch.tensor(loss.item(), dtype=torch.float32, device=self.dist_ctx.device)
+            
+            # 使用all_reduce来计算所有GPU的平均loss
+            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+            aggregated_loss = loss_tensor.item() / self.dist_ctx.world_size
+            
+            return aggregated_loss
+            
+        except Exception as e:
+            # 如果聚合失败，返回当前GPU的loss
+            print(f"⚠️  Loss聚合失败，使用当前GPU loss: {e}")
+            return loss.item()
+
     def save_checkpoint(self, step, is_best=False):
         """保存检查点"""
         if is_best:
@@ -210,76 +748,6 @@ class DeepSpeedTrainer:
         except Exception as e:
             self.dist_ctx.print_main(f"⚠️  清理检查点时出错: {e}")
 
-    def _update_best_model(self, eval_results, step):
-        """更新最佳模型"""
-        if not self.best_model_enabled:
-            return False
-        
-        # 获取当前指标值
-        if self.best_metric_name == 'overall_accuracy':
-            current_value = eval_results.get('overall_accuracy', 0.0)
-        elif self.best_metric_name == 'overall_loss':
-            current_value = eval_results.get('overall_loss', float('inf'))
-        else:
-            # 支持数据集特定指标，如 'food101_accuracy'
-            if 'dataset_metrics' in eval_results:
-                for dataset_name, metrics in eval_results['dataset_metrics'].items():
-                    metric_key = self.best_metric_name.replace(f'{dataset_name}_', '')
-                    if self.best_metric_name.startswith(dataset_name) and metric_key in metrics:
-                        current_value = metrics[metric_key]
-                        break
-                else:
-                    current_value = eval_results.get('overall_accuracy', 0.0)  # 默认使用overall_accuracy
-            else:
-                current_value = eval_results.get('overall_accuracy', 0.0)
-        
-        # 检查是否是最佳模型
-        if self._is_better_metric(current_value, self.best_metric_value):
-            self.best_metric_value = current_value
-            self.best_model_step = step
-            
-            # 保存最佳模型
-            self.save_checkpoint(step, is_best=True)
-            
-            # 清理旧的最佳模型（如果启用了仅保存最佳模型）
-            if self.save_best_only:
-                self._cleanup_old_best_models()
-            
-            # 记录到wandb
-            self.monitor.log_metrics({
-                'best_model_step': step,
-                f'best_{self.best_metric_name}': current_value
-            }, step)
-            
-            self.dist_ctx.print_main(
-                f"🏆 发现更好模型! {self.best_metric_name}: {current_value:.4f} "
-                f"(步骤 {step})"
-            )
-            return True
-        
-        return False
-    
-    def _aggregate_loss(self, loss):
-        """在分布式训练中聚合loss"""
-        if self.dist_ctx.world_size <= 1:
-            return loss.item()
-        
-        try:
-            import torch.distributed as dist
-            # 将当前GPU的loss广播到所有进程并求平均
-            loss_tensor = torch.tensor(loss.item(), dtype=torch.float32, device=self.dist_ctx.device)
-            
-            # 使用all_reduce来计算所有GPU的平均loss
-            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-            aggregated_loss = loss_tensor.item() / self.dist_ctx.world_size
-            
-            return aggregated_loss
-            
-        except Exception as e:
-            # 如果聚合失败，返回当前GPU的loss
-            print(f"⚠️  Loss聚合失败，使用当前GPU loss: {e}")
-            return loss.item()
-    
     def _update_dataset_metrics(self, batch, outputs, aggregated_loss):
         """更新各数据集的指标 - 优化版本，减少计算开销"""
         if not self.enable_dataset_metrics:
@@ -587,425 +1055,6 @@ class DeepSpeedTrainer:
             'overall_accuracy': overall_accuracy,
             'dataset_metrics': eval_results.get('dataset_metrics', {})
         }
-        
-    def train(self):
-        """训练模型"""
-        self.dist_ctx.print_main("开始训练...")
-        self.monitor.start_training()
-        
-        num_epochs = self.config['training']['num_epochs']
-        logging_steps = self.config['logging_steps']
-        save_steps = self.config['save_steps']
-        eval_steps = self.config['eval_steps']
-        
-        # 计算有效训练步数（考虑DeepSpeed的分布式训练和梯度累积）
-        deepspeed_config = self.config.get('deepspeed', {})
-        if isinstance(deepspeed_config, str):
-            with open(deepspeed_config, 'r') as f:
-                deepspeed_config = json.load(f)
-        
-        # 获取DeepSpeed参数
-        micro_batch_size_per_gpu = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
-        gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
-        train_batch_size = deepspeed_config.get('train_batch_size', 32)
-        
-        # 计算有效训练步数（基于实际的DataLoader长度）
-        dataloader_steps_per_epoch = len(self.train_loader)
-        effective_steps_per_epoch = dataloader_steps_per_epoch // gradient_accumulation_steps
-        total_effective_steps = effective_steps_per_epoch * num_epochs
-        
-        # 创建进度条（基于有效训练步数）
-        pbar = tqdm(total=total_effective_steps, desc="Training Steps", disable=not self.dist_ctx.is_main_process)
-        
-        # 计算验证信息
-        dataset_size = len(self.train_loader.dataset)
-        samples_per_gpu = dataloader_steps_per_epoch * micro_batch_size_per_gpu
-        
-        # 使用更清晰的格式输出训练配置信息
-        if self.dist_ctx.is_main_process:
-            print("="*80)
-            print("🚀 训练配置信息")
-            print("="*80)
-            print(f"📊 数据集配置:")
-            print(f"  • 总数据集大小: {dataset_size:,}")
-            print(f"  • 每GPU处理样本数: {samples_per_gpu:,}")
-            print(f"📦 批次配置:")
-            print(f"  • 每GPU微批次大小: {micro_batch_size_per_gpu}")
-            print(f"  • 梯度累积步数: {gradient_accumulation_steps}")
-            print(f"  • 总有效批次大小: {train_batch_size}")
-            print(f"📈 步数统计:")
-            print(f"  • 每GPU DataLoader步数: {dataloader_steps_per_epoch:,}")
-            print(f"  • 有效训练步数每epoch: {effective_steps_per_epoch:,}")
-            print(f"  • 总有效训练步数: {total_effective_steps:,}")
-            print("="*80)
-        
-        effective_step = 0  # 用于跟踪有效步数
-        
-        for epoch in range(num_epochs):
-            self.current_epoch = epoch
-            self.model.train()
-            
-            # 为分布式采样器设置epoch（确保每个epoch的shuffle正确）
-            if hasattr(self.train_loader.sampler, 'set_epoch'):
-                self.train_loader.sampler.set_epoch(epoch)
-            
-            epoch_loss = 0
-            epoch_start_time = time.time()
-            
-            for batch_idx, batch in enumerate(self.train_loader):
-                self.current_step += 1
-                
-                # 前向传播
-                inputs = batch["input_ids"].to(self.dist_ctx.device)
-                attention_mask = batch["attention_mask"].to(self.dist_ctx.device)
-                pixel_values = batch["pixel_values"].to(self.dist_ctx.device)
-                labels = batch["labels"].to(self.dist_ctx.device)
-                
-                # 添加image_grid_thw参数（如果存在）
-                forward_kwargs = {
-                    "input_ids": inputs,
-                    "attention_mask": attention_mask,
-                    "pixel_values": pixel_values,
-                    "labels": labels
-                }
-                
-                # 检查并添加image_grid_thw参数
-                if "image_grid_thw" in batch:
-                    forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(self.dist_ctx.device)
-                
-                # 添加多数据集支持的参数
-                if "dataset_names" in batch:
-                    forward_kwargs["dataset_names"] = batch["dataset_names"]
-                if "num_classes_list" in batch:
-                    forward_kwargs["num_classes_list"] = batch["num_classes_list"]
-                
-                # 正常的前向+反向传播
-                outputs = self.model(**forward_kwargs)
-                loss = outputs.loss
-                self.model.backward(loss)
-                
-                # 聚合多卡loss（在分布式训练中）
-                aggregated_loss = self._aggregate_loss(loss)
-                epoch_loss += aggregated_loss
-                
-                # 优化数据集指标更新 - 降低频率以减少开销
-                if self.enable_dataset_metrics and (self.current_step % 10 == 0):  # 每10步更新一次而不是每步
-                    self._update_dataset_metrics(batch, outputs, aggregated_loss)
-                
-                # 获取梯度范数
-                grad_norm = self.model.get_global_grad_norm()
-                
-                # 更新参数
-                self.model.step()
-                
-                # 记录训练指标（准备数据）
-                current_lr = self.optimizer.param_groups[0]['lr']
-                # 确保grad_norm是float类型，避免JSON序列化错误
-                # 处理grad_norm可能为None的情况
-                if grad_norm is None:
-                    grad_norm_value = 0.0
-                elif hasattr(grad_norm, 'item'):
-                    grad_norm_value = float(grad_norm.item())
-                else:
-                    grad_norm_value = float(grad_norm)
-                
-                # 检查是否是有效步骤（完成了梯度累积）
-                is_effective_step = self.current_step % gradient_accumulation_steps == 0
-                
-                if is_effective_step:
-                    effective_step += 1
-                    
-                    # 降低进度条更新频率以减少开销（每10个有效步骤更新一次）
-                    if effective_step % 10 == 0:
-                        pbar.update(10)  # 一次更新10步
-                        pbar.set_postfix({
-                            'loss': f'{aggregated_loss:.4f}',
-                            'lr': f'{current_lr:.2e}',
-                            'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
-                        })
-                    
-                    # 🔥 关键修复：总是调用log_step记录本地日志，但在eval步骤时跳过wandb记录避免重复
-                    is_eval_step = (effective_step % eval_steps == 0)
-                    # 在eval步骤时skip_wandb=True，避免重复记录到wandb
-                    self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, skip_wandb=is_eval_step)
-                    
-                    # 🔥 新增：在非eval步骤时，确保training指标被记录到WandB
-                    if not is_eval_step and self.dist_ctx.is_main_process:
-                        # 构建training数据
-                        training_data = {
-                            "training/loss": float(aggregated_loss),
-                            "training/lr": float(current_lr), 
-                            "training/epoch": float(epoch),
-                            "training/grad_norm": float(grad_norm_value),
-                            "step": int(effective_step)
-                        }
-                        
-                        # 检查是否需要添加性能指标
-                        should_log_perf = (effective_step % self.monitor.freq['perf_log_freq'] == 0)
-                        if should_log_perf and hasattr(self.monitor, 'step_start_time'):
-                            current_time = time.time()
-                            step_time = current_time - self.monitor.step_start_time
-                            if step_time > 0:
-                                training_data.update({
-                                    "perf/step_time": float(step_time),
-                                    "perf/steps_per_second": float(1.0 / step_time),
-                                })
-                                
-                                # 添加MFU相关指标（如果可用）
-                                if (self.monitor.model_ref is not None and 
-                                    attention_mask is not None and
-                                    self.monitor.actual_flops is not None):
-                                    from .utils.monitor import calculate_mfu_with_profiler, get_gpu_peak_flops
-                                    current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
-                                    actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-                                    
-                                    # 计算MFU
-                                    if effective_step % self.monitor.flops_profile_freq == 0:
-                                        # 使用profiler计算MFU（更精确）
-                                        current_mfu = calculate_mfu_with_profiler(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time)
-                                    else:
-                                        # 使用估算的MFU（基于实际FLOPs）
-                                        actual_flops_per_second = self.monitor.actual_flops / step_time
-                                        peak_flops_per_second = get_gpu_peak_flops()
-                                        current_mfu = actual_flops_per_second / peak_flops_per_second
-                                        current_mfu = min(current_mfu, 1.0)  # 限制在100%以内
-                                    
-                                    training_data.update({
-                                        "perf/mfu": float(current_mfu),
-                                        "perf/mfu_percent": float(current_mfu * 100),
-                                        "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
-                                        "perf/samples_per_second": float(actual_batch_size / step_time),
-                                        "perf/actual_flops": float(self.monitor.actual_flops),
-                                        "perf/actual_seq_length": float(current_seq_length),
-                                        "perf/flops_per_second": float(self.monitor.actual_flops / step_time),
-                                    })
-                        
-                        # 记录training指标到WandB
-                        self.monitor.log_metrics(training_data, effective_step, commit=True)
-                
-                    # 详细日志记录（基于有效步数判断输出频率）
-                    if effective_step % logging_steps == 0:
-                        # 记录各数据集的指标
-                        self._log_dataset_metrics(effective_step, is_eval=False)
-                        
-                        # 基础日志信息
-                        log_message = (
-                            f"Step {effective_step:,} | "
-                            f"Loss: {aggregated_loss:.4f} | "
-                            f"Grad Norm: {grad_norm_value:.4f} | "
-                            f"LR: {current_lr:.2e} | "
-                            f"Epoch: {epoch + batch_idx/len(self.train_loader):.2f}"
-                        )
-                        
-                        # 如果进行了实时FLOPs测量，添加MFU信息
-                        if hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
-                            # 计算当前步骤的时间（从上次记录到现在）
-                            current_time = time.time()
-                            actual_step_time = current_time - self.monitor.step_start_time
-                            
-                            current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
-                            # 使用实际的批次大小（考虑分布式训练）
-                            actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-                            from .utils.monitor import calculate_mfu_with_profiler
-                            current_mfu = calculate_mfu_with_profiler(self.model, actual_batch_size, current_seq_length, actual_step_time)
-                            log_message += f" | MFU: {current_mfu:.1%}"
-                            
-                            if hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
-                                log_message += " [📊实时测量]"
-                        
-                        # 打印日志信息
-                        if self.dist_ctx.is_main_process:
-                            pbar.write(log_message)
-                    
-                    # 定期评估（基于有效步数）
-                    if effective_step > 0 and effective_step % eval_steps == 0:
-                        # 暂时刷新进度条以避免输出冲突
-                        pbar.clear()
-                        
-                        # 添加评估异常处理，避免NCCL超时导致训练中断
-                        try:
-                            # 🔥 关键修复：获取eval数据但不让evaluate方法记录到wandb
-                            # 传入effective_step，但设置log_to_wandb=False避免重复记录
-                            eval_loss, eval_accuracy, eval_results = self.evaluate(step=effective_step, log_to_wandb=False, return_results=True)  # 传入effective_step避免在evaluate中记录
-                            
-                            # 🔥 获取当前训练数据，与eval数据合并记录
-                            # 构建完整的training数据（包括性能指标）
-                            current_time = time.time()
-                            step_time = current_time - self.monitor.step_start_time if self.monitor.step_start_time else 0.0
-                            
-                            current_training_data = {
-                                "training/loss": float(aggregated_loss),
-                                "training/lr": float(current_lr), 
-                                "training/epoch": float(epoch),
-                                "training/grad_norm": float(grad_norm_value),
-                            }
-                            
-                            # 检查是否需要添加性能指标（基于频率配置）
-                            should_log_perf = (effective_step % self.monitor.freq['perf_log_freq'] == 0)
-                            if should_log_perf and step_time > 0:
-                                current_training_data.update({
-                                    "perf/step_time": float(step_time),
-                                    "perf/steps_per_second": float(1.0 / step_time),
-                                })
-                                
-                                # 添加MFU相关指标（如果可用）
-                                if (self.monitor.model_ref is not None and 
-                                    attention_mask is not None):
-                                    from .utils.monitor import calculate_mfu_with_profiler, get_gpu_peak_flops
-                                    current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
-                                    actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-                                    
-                                    # 计算MFU
-                                    if effective_step % self.monitor.flops_profile_freq == 0:
-                                        # 使用profiler计算MFU（更精确）
-                                        current_mfu = calculate_mfu_with_profiler(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time)
-                                    else:
-                                        # 使用估算的MFU（基于实际FLOPs）
-                                        if self.monitor.actual_flops is not None and step_time > 0:
-                                            actual_flops_per_second = self.monitor.actual_flops / step_time
-                                            peak_flops_per_second = get_gpu_peak_flops()
-                                            current_mfu = actual_flops_per_second / peak_flops_per_second
-                                            current_mfu = min(current_mfu, 1.0)  # 限制在100%以内
-                                        else:
-                                            current_mfu = 0.0
-                                    
-                                    current_training_data.update({
-                                        "perf/mfu": float(current_mfu),
-                                        "perf/mfu_percent": float(current_mfu * 100),
-                                        "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
-                                        "perf/samples_per_second": float(actual_batch_size / step_time),
-                                        "perf/actual_flops": float(self.monitor.actual_flops) if self.monitor.actual_flops is not None else 0.0,
-                                        "perf/actual_seq_length": float(current_seq_length),
-                                        "perf/flops_per_second": float(self.monitor.actual_flops / step_time) if self.monitor.actual_flops is not None and step_time > 0 else 0.0,
-                                    })
-                            
-                            # 准备eval数据 - 包含整体指标和每个数据集的详细指标
-                            eval_data = {
-                                "eval/overall_loss": float(eval_loss),
-                                "eval/overall_accuracy": float(eval_accuracy),
-                            }
-                            
-                            # 添加每个数据集的详细指标（如果存在）
-                            if eval_results and 'dataset_metrics' in eval_results and eval_results['dataset_metrics']:
-                                for dataset_name, metrics in eval_results['dataset_metrics'].items():
-                                    eval_data[f"eval/{dataset_name}_loss"] = float(metrics['loss'])
-                                    eval_data[f"eval/{dataset_name}_accuracy"] = float(metrics['accuracy'])
-                                    eval_data[f"eval/{dataset_name}_samples"] = int(metrics['samples'])
-                                    eval_data[f"eval/{dataset_name}_correct"] = int(metrics['correct'])
-                            
-                            # 🔥 合并training和eval数据，一次性记录
-                            combined_data = {**current_training_data, **eval_data}
-                            combined_data["step"] = int(effective_step)
-                            
-                            # 确保所有指标都有正确的分组前缀
-                            # 添加指标分组标记，帮助WandB正确显示
-                            combined_data["_wandb"] = {
-                                "training_metrics": list(current_training_data.keys()),
-                                "eval_metrics": list(eval_data.keys()),
-                                "combined_step": effective_step
-                            }
-                            
-                            # 一次性记录所有数据
-                            self.monitor.log_metrics(combined_data, effective_step, commit=True)
-                            
-                            if self.dist_ctx.is_main_process:
-                                print(f"✅ 训练+评估指标已合并记录到WandB (step={effective_step})")
-                                print(f"   训练指标: {list(current_training_data.keys())}")
-                                print(f"   评估指标: {list(eval_data.keys())}")
-                                print(f"   总指标数: {len(combined_data)}")
-                            
-                        except Exception as eval_error:
-                            if self.dist_ctx.is_main_process:
-                                print(f"⚠️  评估过程出错: {eval_error}")
-                                print("⚠️  跳过本次评估，继续训练...")
-                            # 记录一个占位符的eval结果，避免wandb图表中断
-                            try:
-                                placeholder_eval_data = {
-                                    "training/loss": float(aggregated_loss),
-                                    "training/lr": float(current_lr),
-                                    "eval/overall_loss": 999.0,  # 使用明显的占位符值
-                                    "eval/overall_accuracy": 0.0,
-                                    "eval/evaluation_failed": 1.0,  # 标记评估失败
-                                    "step": int(effective_step)
-                                }
-                                self.monitor.log_metrics(placeholder_eval_data, effective_step)
-                            except:
-                                pass  # 如果连记录都失败，就完全跳过
-                        
-                        self.model.train()
-                        # 重新显示进度条
-                        pbar.refresh()
-                    
-                    # 定期保存检查点（基于有效步数）
-                    if effective_step > 0 and effective_step % save_steps == 0:
-                        if not self.save_best_only:  # 只有在未启用"仅保存最佳模型"时才保存常规检查点
-                            pbar.clear()
-                            self.save_checkpoint(effective_step)
-                            pbar.refresh()
-                        elif self.dist_ctx.is_main_process:  # 如果启用了仅保存最佳模型，只显示信息
-                            pbar.write(f"💡 仅保存最佳模型模式已启用，跳过步骤 {effective_step} 的常规检查点保存")
-            
-            # Epoch结束统计
-            epoch_time = time.time() - epoch_start_time
-            avg_loss = epoch_loss / len(self.train_loader)
-            self.monitor.log_epoch(epoch, avg_loss, epoch_time, effective_step)
-            
-            # 使用tqdm.write()输出epoch统计信息
-            epoch_message = (
-                f"📊 Epoch {epoch+1}/{num_epochs} 完成 | "
-                f"平均损失: {avg_loss:.4f} | "
-                f"耗时: {epoch_time:.2f}秒 | "
-                f"有效步数: {effective_step:,}"
-            )
-            if self.dist_ctx.is_main_process:
-                pbar.write(epoch_message)
-        
-        pbar.close()
-        
-        # 训练结束前进行最终评估
-        if self.dist_ctx.is_main_process:
-            print("\n🎯 训练即将完成，进行最终评估...")
-        eval_loss, eval_accuracy = self.evaluate(step=effective_step)
-        
-        # 保存最终检查点（如果未启用仅保存最佳模型）
-        if not self.save_best_only:
-            if self.dist_ctx.is_main_process:
-                print(f"💾 保存最终检查点...")
-            self.save_checkpoint(effective_step)
-        elif self.dist_ctx.is_main_process:
-            print(f"💡 仅保存最佳模型模式已启用，跳过最终检查点保存")
-        
-        # 进行完整评估（在最佳模型上）
-        if self.full_eval_at_end:
-            self.full_evaluation_on_best_model()
-        
-        if self.dist_ctx.is_main_process:
-            print("🎉 训练完成！")
-            print(f"📊 最终评估结果 - 损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
-            if self.best_model_enabled:
-                print(f"🏆 最佳模型 - {self.best_metric_name}: {self.best_metric_value:.4f} (步骤 {self.best_model_step})")
-                print(f"🏆 最佳模型路径: {self.best_model_path}")
-        
-        # 确保最终评估结果被记录到WandB
-        # 无论是单数据集还是多数据集，都记录最终的整体指标
-        try:
-            final_eval_data = {
-                "eval/final_overall_loss": eval_loss,
-                "eval/final_overall_accuracy": eval_accuracy,
-                "eval/final_evaluation": 1.0  # 标记这是最终评估
-            }
-            self.monitor.log_metrics(final_eval_data, effective_step, commit=True)
-            self.dist_ctx.print_main(f"✅ 最终评估结果已记录到WandB")
-        except Exception as final_eval_error:
-            self.dist_ctx.print_main(f"⚠️ 最终评估WandB记录失败: {final_eval_error}")
-        self.monitor.save_logs()
-        
-        # 训练结束后进行最终清理
-        if self.save_best_only and self.dist_ctx.is_main_process:
-            self.dist_ctx.print_main("🧹 进行最终检查点清理...")
-            self._cleanup_old_best_models()
-        
-        self.monitor.finish_training()
         
     def load_checkpoint(self, checkpoint_path):
         """加载检查点"""
