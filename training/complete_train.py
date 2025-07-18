@@ -24,9 +24,7 @@ if project_root not in sys.path:
 
 from data.dataloader import create_dataloaders
 from models.qwen2_5_vl_classify import Qwen2_5_VLForImageClassification
-from optimizer.optimizer import create_optimizer
 from training.deepspeed_trainer import DeepSpeedTrainer
-from training.lr_scheduler import create_lr_scheduler
 from training.utils.config_utils import prepare_config
 
 def is_main_process():
@@ -130,32 +128,7 @@ def setup_data(config):
     
     return train_loader, val_loader
 
-def setup_optimizer_and_scheduler(model, config):
-    """设置优化器和学习率调度器"""
-    if is_main_process():
-        print("🔧 设置优化器和学习率调度器...")
-    
-    # 创建优化器 - 只传递model和config
-    optimizer = create_optimizer(model, config)
-    
-    # 创建学习率调度器 - 需要config和steps_per_epoch
-    # 这里先创建一个临时的steps_per_epoch，后续会在trainer中更新
-    temp_steps_per_epoch = 1000  # 临时值，会在trainer中更新
-    lr_scheduler = create_lr_scheduler(optimizer, config, temp_steps_per_epoch)
-    
-    # 只在主进程中打印信息
-    if is_main_process():
-        # 获取配置信息用于打印
-        training_config = config.get('training', {})
-        lr_config = training_config.get('lr_scheduler', {})
-        
-        print(f"✅ 优化器和调度器创建完成")
-        print(f"  • 学习率: {training_config.get('lr', 1e-5)}")
-        print(f"  • 权重衰减: {training_config.get('weight_decay', 0.01)}")
-        print(f"  • 预热步数: {training_config.get('warmup_steps', 100)}")
-        print(f"  • 调度器类型: {lr_config.get('type', 'cosine')}")
-    
-    return optimizer, lr_scheduler
+
 
 def main():
     """主训练函数"""
@@ -200,16 +173,13 @@ def main():
     # 设置数据加载器
     train_loader, val_loader = setup_data(config)
     
-    # 设置优化器和调度器
-    optimizer, lr_scheduler = setup_optimizer_and_scheduler(model, config)
-    
     # 创建DeepSpeed训练器
     if is_main_process():
         print("🔧 创建DeepSpeed训练器...")
     trainer = DeepSpeedTrainer(config)
     
-    # 设置模型和相关组件
-    trainer.setup_model(model, train_loader, val_loader, optimizer, lr_scheduler)
+    # 设置模型和相关组件（优化器和调度器会在DeepSpeed初始化时创建）
+    trainer.setup_model(model, train_loader, val_loader, None, None)
     
     # 如果指定了恢复检查点
     if args.resume_from and is_main_process():

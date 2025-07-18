@@ -90,16 +90,31 @@ class DeepSpeedTrainer:
             'gpu_utilization': []
         }
         
-    def setup_model(self, model, train_loader, val_loader, optimizer, lr_scheduler):
+    def setup_model(self, model, train_loader, val_loader, optimizer=None, lr_scheduler=None):
         """设置模型和相关组件"""
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
-        self.optimizer = optimizer
-        self.lr_scheduler = lr_scheduler
         
         # 🔥 新增：应用内存优化设置
         self._apply_memory_optimizations()
+        
+        # 创建优化器和调度器（如果未提供）
+        if optimizer is None:
+            if self.dist_ctx.is_main_process:
+                print("🔧 创建优化器...")
+            from optimizer.optimizer import create_optimizer
+            optimizer = create_optimizer(model, self.config)
+        
+        if lr_scheduler is None:
+            if self.dist_ctx.is_main_process:
+                print("🔧 创建学习率调度器...")
+            from training.lr_scheduler import create_lr_scheduler
+            # 计算steps_per_epoch
+            deepspeed_config = self._get_deepspeed_config()
+            gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
+            steps_per_epoch = len(train_loader) // gradient_accumulation_steps
+            lr_scheduler = create_lr_scheduler(optimizer, self.config, steps_per_epoch)
         
         # 获取DeepSpeed配置
         deepspeed_config = self._get_deepspeed_config()
@@ -183,11 +198,17 @@ class DeepSpeedTrainer:
         gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
         train_batch_size = deepspeed_config.get('train_batch_size', 32)
         
-        dataloader_steps_per_epoch = len(self.train_loader)
-        effective_steps_per_epoch = dataloader_steps_per_epoch // gradient_accumulation_steps
+        dataset_size = len(self.train_loader.dataset)
+        
+        # 正确计算每epoch的有效步数：基于总批次大小
+        effective_steps_per_epoch = dataset_size // train_batch_size
+        if dataset_size % train_batch_size != 0:
+            effective_steps_per_epoch += 1  # 向上取整
+        
         total_effective_steps = effective_steps_per_epoch * self.config['training']['num_epochs']
         
-        dataset_size = len(self.train_loader.dataset)
+        # DataLoader的步数（用于调试信息）
+        dataloader_steps_per_epoch = len(self.train_loader)
         samples_per_gpu = dataloader_steps_per_epoch * micro_batch_size_per_gpu
         
         return {

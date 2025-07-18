@@ -1110,37 +1110,12 @@ class TrainingMonitor:
                 wandb.log(log_data, commit=commit)
                 step_info = "auto-step"
             
-            # 输出详细的记录信息
-            total_metrics = len(log_data)
-            print(f"📊 WandB记录完成 ({step_info}):")
-            print(f"   📈 总指标数: {total_metrics}")
-            
-            if training_metrics_count > 0:
-                print(f"   🏃 Training指标: {training_metrics_count}个 - {training_metrics_list}")
-            
-            if eval_metrics_count > 0:
-                print(f"   📊 Eval指标: {eval_metrics_count}个 - {eval_metrics_list}")
-            
-            if perf_metrics_count > 0:
-                print(f"   ⚡ Perf指标: {perf_metrics_count}个 - {perf_metrics_list}")
-            
-            # 验证WandB记录状态
-            if wandb.run is not None:
-                run_state = getattr(wandb.run, 'state', 'unknown')
-                print(f"   🔍 WandB状态: {run_state} | 项目: {wandb.run.project} | ID: {wandb.run.id}")
-                
-                # 如果包含eval指标，确保数据提交
-                if eval_metrics_count > 0 and commit:
-                    try:
-                        # 强制提交数据
-                        wandb.log({}, commit=True)
-                        print(f"   ✅ Eval数据强制提交完成")
-                    except Exception as commit_error:
-                        print(f"   ❌ 强制提交失败: {commit_error}")
-                        print(f"      WandB run状态: {getattr(wandb.run, 'state', 'unknown')}")
-                        print(f"      WandB项目: {getattr(wandb.run, 'project', 'unknown')}")
-                        import traceback
-                        traceback.print_exc()
+            # 只在包含eval指标时进行强制提交（静默模式）
+            if eval_metrics_count > 0 and commit and wandb.run is not None:
+                try:
+                    wandb.log({}, commit=True)
+                except Exception:
+                    pass  # 静默处理提交错误
             
         except Exception as e:
             print(f"❌ 记录指标到WandB失败: {e}")
