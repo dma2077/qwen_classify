@@ -48,12 +48,11 @@ def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="Qwen2.5-VL图像分类完整训练")
     parser.add_argument("--config", type=str, required=True, help="配置文件路径")
-    parser.add_argument("--deepspeed_config", type=str, required=True, help="DeepSpeed配置文件路径")
     parser.add_argument("--local_rank", type=int, default=-1, help="本地进程排名")
     parser.add_argument("--resume_from", type=str, help="恢复训练的检查点路径")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     
-    # 支持DeepSpeed参数
+    # 支持DeepSpeed参数（包括--deepspeed_config）
     parser = deepspeed.add_config_arguments(parser)
     return parser.parse_args()
 
