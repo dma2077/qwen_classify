@@ -23,10 +23,8 @@ class DeepSpeedTrainer:
             from .utils.distributed import setup_nccl_timeout_env
             setup_nccl_timeout_env()
         
-        # 🔥 新增：内存优化配置
+        # 内存优化配置
         self.enable_gradient_checkpointing = config.get('training', {}).get('gradient_checkpointing', True)
-        self.enable_memory_efficient_attention = config.get('training', {}).get('memory_efficient_attention', True)
-        self.enable_amp = config.get('training', {}).get('amp', True)  # 自动混合精度
         
         # 只在主进程创建完整的TrainingMonitor，非主进程使用DummyMonitor
         if self.dist_ctx.is_main_process:
@@ -122,7 +120,7 @@ class DeepSpeedTrainer:
         if self.dist_ctx.is_main_process:
             print("🔧 应用内存优化设置...")
             
-        # 1. 梯度检查点 - 已禁用，优先计算速度
+        # 1. 梯度检查点
         if self.enable_gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
             if self.dist_ctx.is_main_process:
@@ -131,35 +129,7 @@ class DeepSpeedTrainer:
             if self.dist_ctx.is_main_process:
                 print("  ⏭️ 跳过梯度检查点，优先计算速度")
         
-        # 2. FlashAttention优化
-        if self.enable_memory_efficient_attention:
-            try:
-                # 检查模型是否支持FlashAttention
-                if hasattr(self.model, 'config') and hasattr(self.model.config, '_attn_implementation'):
-                    attn_impl = self.model.config._attn_implementation
-                    if self.dist_ctx.is_main_process:
-                        if attn_impl == "flash_attention_2":
-                            print("  ✅ FlashAttention 2 已启用")
-                        elif attn_impl == "flash_attention_1":
-                            print("  ✅ FlashAttention 1 已启用")
-                        else:
-                            print(f"  ℹ️ 使用 {attn_impl} attention")
-                else:
-                    if self.dist_ctx.is_main_process:
-                        print("  ℹ️ 无法检测attention实现，但模型可能已自动启用FlashAttention")
-            except Exception as e:
-                if self.dist_ctx.is_main_process:
-                    print(f"  ⚠️ FlashAttention检测失败: {e}")
-        
-        # 3. 自动混合精度 - 已禁用，DeepSpeed已启用bf16
-        if self.enable_amp:
-            if self.dist_ctx.is_main_process:
-                print("  ✅ 启用自动混合精度训练")
-        else:
-            if self.dist_ctx.is_main_process:
-                print("  ⏭️ 跳过额外AMP，DeepSpeed已启用bf16")
-        
-        # 4. 清理GPU缓存
+        # 2. 清理GPU缓存
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             if self.dist_ctx.is_main_process:

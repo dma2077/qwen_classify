@@ -13,10 +13,6 @@ import deepspeed
 import random
 import numpy as np
 
-# 🔥 新增：设置FlashAttention环境变量
-os.environ["FLASH_ATTENTION_FORCE_ENABLE"] = "1"
-os.environ["FLASH_ATTENTION_2"] = "1"
-
 # Add project root to Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:

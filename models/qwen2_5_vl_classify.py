@@ -32,45 +32,14 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         if hasattr(config, 'use_cache'):
             config.use_cache = False
         
-        # 🔥 新增：启用FlashAttention
-        if hasattr(config, '_attn_implementation'):
-            # 检查是否支持FlashAttention
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    # 检查flash-attn是否可用
-                    try:
-                        # 尝试导入flash_attn来验证安装
-                        import flash_attn
-                        config._attn_implementation = "flash_attention_2"
-                        print("✅ FlashAttention 2 已启用")
-                    except ImportError:
-                        # 尝试使用FlashAttention 1
-                        try:
-                            config._attn_implementation = "flash_attention_1"
-                            print("✅ FlashAttention 1 已启用")
-                        except:
-                            config._attn_implementation = "eager"
-                            print("⚠️ flash-attn未安装，使用eager attention")
-                    except Exception as e:
-                        # 如果flash_attn导入失败（如GLIBC问题），降级到eager
-                        config._attn_implementation = "eager"
-                        print(f"⚠️ FlashAttention导入失败（可能是GLIBC版本问题），使用eager attention: {e}")
-                else:
-                    config._attn_implementation = "eager"
-                    print("⚠️ CUDA不可用，使用eager attention")
-            except Exception as e:
-                config._attn_implementation = "eager"
-                print(f"⚠️ FlashAttention启用失败: {e}，使用eager attention")
-        
-        # 配置信息已设置完成，无需输出
-        
         super().__init__(config)
 
         base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             pretrained_model_name,
             config=config,
             ignore_mismatched_sizes=True,
+            attn_implementation=config._attn_implementation,
+            torch_dtype=torch.bfloat16
         )
         self.model = base_model.model
         self.processor = AutoProcessor.from_pretrained(pretrained_model_name)
