@@ -59,7 +59,7 @@ training:
 
 # DeepSpeed specific settings
 deepspeed:
-  config_file: "configs/ds_s2.json"
+  config_file: "configs/ds_minimal.json"
   zero_stage: 2
 
 # Weights & Biases configuration
