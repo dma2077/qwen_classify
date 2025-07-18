@@ -184,9 +184,25 @@ class DeepSpeedTrainer:
         
     def _calculate_mfu(self, effective_step, inputs, attention_mask, step_time):
         """计算MFU（Model FLOPs Utilization）"""
-        if not (self.monitor.model_ref is not None and 
-                attention_mask is not None and
-                self.monitor.actual_flops is not None):
+        # 检查必要条件
+        if self.monitor.model_ref is None:
+            if self.dist_ctx.is_main_process:
+                print(f"⚠️ MFU计算失败: model_ref为None")
+            return None
+            
+        if attention_mask is None:
+            if self.dist_ctx.is_main_process:
+                print(f"⚠️ MFU计算失败: attention_mask为None")
+            return None
+            
+        if self.monitor.actual_flops is None:
+            if self.dist_ctx.is_main_process:
+                print(f"⚠️ MFU计算失败: actual_flops为None")
+            return None
+            
+        if step_time <= 0:
+            if self.dist_ctx.is_main_process:
+                print(f"⚠️ MFU计算失败: step_time={step_time} <= 0")
             return None
             
         # 创建缓存键
@@ -202,12 +218,18 @@ class DeepSpeedTrainer:
         if effective_step % self.monitor.flops_profile_freq == 0:
             # 使用profiler计算MFU（更精确）
             current_mfu = calculate_mfu_with_profiler(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time)
+            if self.dist_ctx.is_main_process:
+                print(f"🔍 使用profiler计算MFU (step={effective_step}): {current_mfu:.4f}")
         else:
             # 使用估算的MFU（基于实际FLOPs）
             actual_flops_per_second = self.monitor.actual_flops / step_time
             peak_flops_per_second = get_gpu_peak_flops()
             current_mfu = actual_flops_per_second / peak_flops_per_second
             current_mfu = min(current_mfu, 1.0)  # 限制在100%以内
+            
+            if self.dist_ctx.is_main_process:
+                print(f"📊 估算MFU (step={effective_step}): {current_mfu:.4f} "
+                      f"(actual_flops={self.monitor.actual_flops:.2e}, step_time={step_time:.3f}s)")
             
         # 缓存结果
         self._mfu_cache[cache_key] = current_mfu
@@ -308,24 +330,34 @@ class DeepSpeedTrainer:
             # 准备eval数据
             eval_data = self._build_eval_metrics(eval_loss, eval_accuracy, eval_results)
             
-            # 🔥 修复：分别记录training和eval指标，确保每次eval都能正确记录
+            # 🔥 修复：确保eval指标正确记录到WandB
             if self.dist_ctx.is_main_process:
-                # 先记录training指标（使用commit=False，避免覆盖）
-                self.monitor.log_metrics(current_training_data, effective_step, commit=False)
+                # 合并training和eval指标，一次性记录
+                combined_data = current_training_data.copy()
+                combined_data.update(eval_data)
                 
-                # 再记录eval指标（使用commit=True，确保数据提交）
-                self.monitor.log_metrics(eval_data, effective_step, commit=True)
+                # 一次性记录所有指标
+                self.monitor.log_metrics(combined_data, effective_step, commit=True)
                 
                 # 输出详细的记录信息
                 eval_metrics_list = [k for k in eval_data.keys() if k.startswith('eval/')]
                 training_metrics_list = [k for k in current_training_data.keys() if k.startswith('training/')]
+                perf_metrics_list = [k for k in current_training_data.keys() if k.startswith('perf/')]
                 
-                print(f"✅ 训练和评估指标已记录到WandB (step={effective_step})")
+                print(f"✅ 训练、评估和性能指标已记录到WandB (step={effective_step})")
                 print(f"   📊 记录的eval指标: {eval_metrics_list}")
                 print(f"   🏃 记录的training指标: {training_metrics_list}")
+                print(f"   ⚡ 记录的perf指标: {perf_metrics_list}")
                 print(f"   📈 整体准确率: {eval_accuracy:.4f}")
                 print(f"   📉 整体损失: {eval_loss:.6f}")
-                print(f"   🔢 training指标数量: {len(current_training_data)}, eval指标数量: {len(eval_data)}")
+                print(f"   🔢 总指标数量: {len(combined_data)}")
+                
+                # 特别检查eval指标是否包含在combined_data中
+                missing_eval = [k for k in eval_metrics_list if k not in combined_data]
+                if missing_eval:
+                    print(f"   ⚠️ 缺失的eval指标: {missing_eval}")
+                else:
+                    print(f"   ✅ 所有eval指标都已包含")
                 
         except Exception as eval_error:
             if self.dist_ctx.is_main_process:
