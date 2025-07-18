@@ -172,15 +172,18 @@ def main():
         config = yaml.safe_load(f)
     
     # 验证并设置DeepSpeed配置
-    if is_main_process():
-        print(f"🔧 使用命令行指定的DeepSpeed配置: {args.deepspeed_config}")
-    
-    # 验证DeepSpeed配置文件是否存在
-    if not os.path.exists(args.deepspeed_config):
-        raise FileNotFoundError(f"DeepSpeed配置文件不存在: {args.deepspeed_config}")
-    
-    # 将DeepSpeed配置添加到config中
-    config['deepspeed'] = args.deepspeed_config
+    if hasattr(args, 'deepspeed_config') and args.deepspeed_config:
+        if is_main_process():
+            print(f"🔧 使用命令行指定的DeepSpeed配置: {args.deepspeed_config}")
+        
+        # 验证DeepSpeed配置文件是否存在
+        if not os.path.exists(args.deepspeed_config):
+            raise FileNotFoundError(f"DeepSpeed配置文件不存在: {args.deepspeed_config}")
+        
+        # 将DeepSpeed配置添加到config中
+        config['deepspeed'] = args.deepspeed_config
+    else:
+        raise ValueError("DeepSpeed配置文件未指定！请使用--deepspeed_config参数指定配置文件")
     
     config = prepare_config(config)
     
