@@ -88,26 +88,31 @@ def setup_data(config):
     """设置数据加载器"""
     print("🔧 设置数据加载器...")
     
-    # 获取数据配置
+    # 创建数据加载器 - 只传递config参数
+    train_loader, val_loader = create_dataloaders(config)
+    
+    # 获取数据配置用于打印信息
     data_config = config.get('data', {})
     training_config = config.get('training', {})
-    
-    # 创建数据加载器
-    train_loader, val_loader = create_dataloaders(
-        train_jsonl=data_config.get('train_jsonl'),
-        val_jsonl=data_config.get('val_jsonl'),
-        batch_size=training_config.get('batch_size', 8),
-        num_workers=training_config.get('dataloader_num_workers', 16),
-        pin_memory=training_config.get('dataloader_pin_memory', True),
-        max_length=data_config.get('max_length', 512),
-        image_size=data_config.get('image_size', 224)
-    )
     
     print(f"✅ 数据加载器创建完成")
     print(f"  • 训练集: {len(train_loader.dataset)} 样本")
     print(f"  • 验证集: {len(val_loader.dataset)} 样本")
-    print(f"  • 批次大小: {training_config.get('batch_size', 8)}")
-    print(f"  • Worker数量: {training_config.get('dataloader_num_workers', 16)}")
+    
+    # 从DeepSpeed配置中获取批次大小
+    if 'deepspeed' in config:
+        if isinstance(config['deepspeed'], str):
+            import json
+            with open(config['deepspeed'], 'r') as f:
+                deepspeed_config = json.load(f)
+        else:
+            deepspeed_config = config['deepspeed']
+        batch_size = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
+    else:
+        batch_size = training_config.get('batch_size', 8)
+    
+    print(f"  • 批次大小: {batch_size}")
+    print(f"  • Worker数量: {training_config.get('num_workers', 16)}")
     
     return train_loader, val_loader
 
@@ -115,28 +120,23 @@ def setup_optimizer_and_scheduler(model, config):
     """设置优化器和学习率调度器"""
     print("🔧 设置优化器和学习率调度器...")
     
+    # 创建优化器 - 只传递model和config
+    optimizer = create_optimizer(model, config)
+    
+    # 创建学习率调度器 - 需要config和steps_per_epoch
+    # 这里先创建一个临时的steps_per_epoch，后续会在trainer中更新
+    temp_steps_per_epoch = 1000  # 临时值，会在trainer中更新
+    lr_scheduler = create_lr_scheduler(optimizer, config, temp_steps_per_epoch)
+    
+    # 获取配置信息用于打印
     training_config = config.get('training', {})
-    
-    # 创建优化器
-    optimizer = create_optimizer(
-        model=model,
-        learning_rate=training_config.get('learning_rate', 1e-5),
-        weight_decay=training_config.get('weight_decay', 0.01),
-        optimizer_type=config.get('optimizer', {}).get('type', 'AdamW')
-    )
-    
-    # 创建学习率调度器
-    lr_scheduler = create_lr_scheduler(
-        optimizer=optimizer,
-        num_training_steps=1000,  # 将在trainer中更新
-        warmup_steps=training_config.get('warmup_steps', 100),
-        scheduler_type=config.get('lr_scheduler', {}).get('type', 'cosine')
-    )
+    lr_config = training_config.get('lr_scheduler', {})
     
     print(f"✅ 优化器和调度器创建完成")
-    print(f"  • 学习率: {training_config.get('learning_rate', 1e-5)}")
+    print(f"  • 学习率: {training_config.get('lr', 1e-5)}")
     print(f"  • 权重衰减: {training_config.get('weight_decay', 0.01)}")
     print(f"  • 预热步数: {training_config.get('warmup_steps', 100)}")
+    print(f"  • 调度器类型: {lr_config.get('type', 'cosine')}")
     
     return optimizer, lr_scheduler
 

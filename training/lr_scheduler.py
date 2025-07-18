@@ -62,10 +62,12 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     - cosine_restarts: 带重启的余弦调度器
     """
     # 从配置中获取参数
-    lr_config = config['training'].get('lr_scheduler', {})
+    training_config = config['training']
+    lr_config = training_config.get('lr_scheduler', {})
     scheduler_type = lr_config.get('type', 'cosine')
-    warmup_steps_config = config['training']['warmup_steps']
-    num_epochs = config['training']['num_epochs']
+    warmup_steps_config = training_config['warmup_steps']
+    # 支持epochs和num_epochs两种字段名
+    num_epochs = training_config.get('epochs') or training_config.get('num_epochs')
     
     # 类型检查和转换
     if isinstance(num_epochs, str):

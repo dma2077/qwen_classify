@@ -2,9 +2,10 @@ from torch.optim import AdamW
 
 def create_optimizer(model, config):
     """创建优化器"""
-    # 从配置中获取参数
-    lr = config['training']['learning_rate']
-    weight_decay = config['training']['weight_decay']
+    # 从配置中获取参数，支持lr和learning_rate两种字段名
+    training_config = config['training']
+    lr = training_config.get('lr') or training_config.get('learning_rate')
+    weight_decay = training_config['weight_decay']
     
     # 确保学习率是数字类型
     if isinstance(lr, str):
