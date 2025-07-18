@@ -61,7 +61,6 @@ training:
 deepspeed:
   config_file: "configs/ds_s2.json"
   zero_stage: 2
-  bf16: true
 
 # Weights & Biases configuration
 wandb:
@@ -71,8 +70,4 @@ wandb:
   tags: ["qwen", "deepspeed", "classification", "cosine_hold", "single_dataset"]
   notes: "Qwen2.5-VL Food101 classification with cosine+hold scheduler"
   log_dataset_metrics: false  # 单数据集不需要按数据集分组的指标
-  log_overall_metrics: true   # 记录整体指标
-
-# Legacy accelerate settings (for compatibility)
-accelerate:
-  bf16: true 
+  log_overall_metrics: true   # 记录整体指标 

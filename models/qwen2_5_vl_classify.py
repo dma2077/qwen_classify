@@ -180,8 +180,6 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         # 经过代码分析确认：训练和评估过程中都不需要hidden_states和attentions
         # 只需要loss和logits进行反向传播和预测计算
         
-        print(f"🔍 模型输出简化: self.training={self.training}, 只返回loss和logits")
-        
         # 统一返回简化输出 - 大幅节省内存和通信带宽
         return SequenceClassifierOutput(
             loss=loss,

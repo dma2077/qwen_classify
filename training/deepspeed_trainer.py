@@ -101,12 +101,15 @@ class DeepSpeedTrainer:
         # 🔥 新增：应用内存优化设置
         self._apply_memory_optimizations()
         
+        # 获取DeepSpeed配置
+        deepspeed_config = self._get_deepspeed_config()
+        
         # 初始化DeepSpeed
         self.model, self.optimizer, _, self.lr_scheduler = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
-            config=self.config['deepspeed']
+            config=deepspeed_config
         )
         
         self.dist_ctx.print_info()
