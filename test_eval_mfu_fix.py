@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root))
 
 from training.deepspeed_trainer import DeepSpeedTrainer
 from training.utils.config_utils import prepare_config
-from models.qwen2_5_vl_classify import Qwen2_5VLClassify
+from models.qwen2_5_vl_classify import Qwen2_5_VLForImageClassification
 from data.dataloader import create_dataloaders
 from optimizer.optimizer import create_optimizer_and_scheduler
 
@@ -26,7 +26,7 @@ def test_eval_mfu_fix():
     # 使用简单的测试配置
     test_config = {
         'model': {
-            'name': 'Qwen2.5-VL-7B-Instruct',
+            'pretrained_name': 'Qwen/Qwen2.5-VL-7B-Instruct',
             'num_classes': 10,
             'use_flash_attention': False,
             'use_cache': False
@@ -44,8 +44,8 @@ def test_eval_mfu_fix():
             'save_steps': 20
         },
         'data': {
-            'train_data_path': 'data/sample_data',
-            'val_data_path': 'data/sample_data',
+            'train_jsonl': 'data/sample_data/train.jsonl',
+            'val_jsonl': 'data/sample_data/val.jsonl',
             'max_length': 512,
             'image_size': 224
         },
@@ -76,11 +76,12 @@ def test_eval_mfu_fix():
     
     # 创建模型
     print("📦 创建模型...")
-    model = Qwen2_5VLClassify(
-        model_name=config['model']['name'],
-        num_classes=config['model']['num_classes'],
-        use_flash_attention=config['model']['use_flash_attention'],
-        use_cache=config['model']['use_cache']
+    model = Qwen2_5_VLForImageClassification(
+        pretrained_model_name=config['model']['name'],
+        num_labels=config['model']['num_classes'],
+        loss_config={'type': 'cross_entropy'},
+        dataset_configs={},
+        enable_logits_masking=False
     )
     
     # 创建数据加载器
