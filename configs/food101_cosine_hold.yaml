@@ -36,6 +36,7 @@ training:
   save_deepspeed_format: false
   num_workers: 16
   use_fused_adam: true
+  gradient_checkpointing: false
   
   # 学习率调度器配置
   lr_scheduler:
@@ -53,9 +54,9 @@ training:
   
   # 评估配置
   evaluation:
-    partial_eval_during_training: true  # 训练过程中是否进行部分评估
-    full_eval_at_end: true  # 训练结束后是否进行完整评估
-    eval_best_model_only: true  # 是否只对最佳模型进行完整评估
+    partial_eval_during_training: true  # 训练过程中进行部分评估（20%数据）
+    full_eval_at_end: true  # 训练结束后进行完整评估（100%数据）
+    eval_best_model_only: true  # 只对最佳模型进行完整评估
 
 # DeepSpeed配置通过命令行参数传入，不在此处设置
 

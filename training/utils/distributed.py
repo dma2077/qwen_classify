@@ -20,11 +20,8 @@ class DistributedContext:
     
     def print_info(self):
         """打印分布式训练信息"""
-        if self.is_main_process:
-            print(f"WORLD_SIZE: {self.world_size}")
-            print(f"rank: {self.rank}")
-            print(f"local_rank: {self.local_rank}")
-            print(f"device: {self.device}")
+        # 简化输出，只在需要时显示
+        pass
     
     def barrier(self):
         """同步所有进程"""
@@ -93,4 +90,5 @@ def setup_nccl_timeout_env():
     if 'NCCL_ASYNC_ERROR_HANDLING' not in os.environ:
         os.environ['NCCL_ASYNC_ERROR_HANDLING'] = '1'
     
-    print("✅ 已设置基础NCCL超时保护（10分钟超时）") 
+    # 静默设置，不输出信息
+    pass 

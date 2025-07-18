@@ -340,3 +340,108 @@ def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> D
         'total_samples': total,
         'total_correct': correct
     } 
+
+def evaluate_single_dataset_fast(model, val_loader, device) -> Tuple[float, float]:
+    """优化的单数据集评估函数 - 大幅提升速度"""
+    import torch.distributed as dist
+    
+    # 确保模型处于评估模式
+    model.eval()
+    if hasattr(model, 'module'):
+        model.module.eval()
+    
+    total_loss = 0
+    correct = 0
+    total = 0
+    batch_count = 0
+    
+    # 检查分布式状态
+    is_distributed = dist.is_available() and dist.is_initialized()
+    if is_distributed:
+        current_rank = dist.get_rank()
+    else:
+        current_rank = 0
+    
+    # 只在主进程显示进度条
+    show_progress = not is_distributed or current_rank == 0
+    eval_pbar = tqdm(val_loader, desc="Evaluating", leave=False, disable=not show_progress)
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(eval_pbar):
+            try:
+                batch_count += 1
+                
+                # 移动数据到设备 - 使用non_blocking加速
+                inputs = batch["input_ids"].to(device, non_blocking=True)
+                attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+                pixel_values = batch["pixel_values"].to(device, non_blocking=True)
+                labels = batch["labels"].to(device, non_blocking=True)
+                
+                # 前向传播
+                forward_kwargs = {
+                    "input_ids": inputs,
+                    "attention_mask": attention_mask,
+                    "pixel_values": pixel_values,
+                    "labels": labels
+                }
+                
+                # 检查并添加image_grid_thw参数
+                if "image_grid_thw" in batch:
+                    forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(device, non_blocking=True)
+                
+                outputs = model(**forward_kwargs)
+                
+                # 计算损失和准确率
+                loss = outputs.loss
+                predictions = torch.argmax(outputs.logits, dim=-1)
+                
+                # 更新统计
+                total_loss += loss.item()
+                correct += (predictions == labels).sum().item()
+                total += labels.size(0)
+                
+                # 减少进度条更新频率，只在关键步骤更新
+                if show_progress and (batch_idx % 50 == 0 or batch_idx == len(val_loader) - 1):
+                    current_accuracy = correct / total if total > 0 else 0
+                    current_avg_loss = total_loss / batch_count
+                    eval_pbar.set_postfix({
+                        'loss': f'{current_avg_loss:.4f}',
+                        'accuracy': f'{current_accuracy:.4f}',
+                        'samples': f'{total}'
+                    })
+                
+            except Exception as e:
+                if show_progress:
+                    print(f"❌ 评估批次 {batch_idx} 出错: {e}")
+                continue
+    
+    # 关闭进度条
+    eval_pbar.close()
+    
+    # 在分布式环境下聚合结果 - 简化版本
+    if is_distributed:
+        # 只进行一次聚合，避免多次all_reduce
+        total_loss_tensor = torch.tensor(total_loss, dtype=torch.float32, device=device)
+        correct_tensor = torch.tensor(correct, dtype=torch.long, device=device) 
+        total_tensor = torch.tensor(total, dtype=torch.long, device=device)
+        
+        # 批量聚合
+        tensors_to_reduce = [total_loss_tensor, correct_tensor, total_tensor]
+        if batch_all_reduce(tensors_to_reduce, op=dist.ReduceOp.SUM):
+            total_loss = total_loss_tensor.item()
+            correct = correct_tensor.item()
+            total = total_tensor.item()
+        
+        # 只在主进程输出结果
+        if current_rank == 0:
+            avg_loss = total_loss / batch_count if batch_count > 0 else 0
+            accuracy = correct / total if total > 0 else 0
+            print(f"\n📊 评估结果: Loss={avg_loss:.4f}, Accuracy={accuracy:.4f} ({accuracy*100:.2f}%)")
+        
+        return total_loss / batch_count if batch_count > 0 else 0, correct / total if total > 0 else 0
+    else:
+        # 单GPU模式
+        avg_loss = total_loss / batch_count if batch_count > 0 else 0
+        accuracy = correct / total if total > 0 else 0
+        print(f"\n📊 评估结果: Loss={avg_loss:.4f}, Accuracy={accuracy:.4f} ({accuracy*100:.2f}%)")
+        return avg_loss, accuracy 

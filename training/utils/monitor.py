@@ -517,26 +517,16 @@ class TrainingMonitor:
         if config_flops_profile_freq is not None:
             # 配置文件中有设置，使用配置文件的值
             self.flops_profile_freq = config_flops_profile_freq
-            print(f"📊 从配置文件读取flops_profile_freq: {self.flops_profile_freq}")
         elif self.flops_profile_freq is not None:
             # 构造函数传入了值，保持不变
-            print(f"📊 使用构造函数传入的flops_profile_freq: {self.flops_profile_freq}")
+            pass
         else:
             # 都没有设置，使用默认值
             self.flops_profile_freq = 500
-            print(f"📊 使用默认flops_profile_freq: {self.flops_profile_freq}")
         
-        # 打印监控频率配置
-        print(f"🔧 监控频率配置:")
-        for key, value in self.freq.items():
-            print(f"   {key}: 每{value}步")
-        print(f"   flops_profile_freq: 每{self.flops_profile_freq}步")
-        
-        # 检查频率设置是否合理
-        if self.freq['training_log_freq'] > 100:
-            print(f"⚠️  建议：training_log_freq={self.freq['training_log_freq']}可能太高，建议设置为1-50以确保指标正常显示")
-        if self.freq['perf_log_freq'] > 200:
-            print(f"⚠️  建议：perf_log_freq={self.freq['perf_log_freq']}可能太高，建议设置为10-100以确保性能指标正常显示")
+        # 只在主进程输出关键监控配置
+        if self.is_main_process:
+            print(f"📊 监控频率: 训练{self.freq['training_log_freq']}步, 性能{self.freq['perf_log_freq']}步, 评估{self.freq['eval_log_freq']}步")
     
     def _get_effective_batch_size(self, config: Dict) -> int:
         """正确获取有效的batch size"""
@@ -551,9 +541,7 @@ class TrainingMonitor:
             
             # 优先使用DeepSpeed的train_batch_size（这是真正的有效批次大小）
             if 'train_batch_size' in deepspeed_config:
-                batch_size = deepspeed_config['train_batch_size']
-                print(f"📊 从DeepSpeed配置获取batch_size: {batch_size}")
-                return batch_size
+                return deepspeed_config['train_batch_size']
             
             # 备选方案：从train_micro_batch_size_per_gpu计算
             if 'train_micro_batch_size_per_gpu' in deepspeed_config:
@@ -571,17 +559,13 @@ class TrainingMonitor:
                     world_size = 1
                 
                 effective_batch_size = micro_batch * gradient_accumulation * world_size
-                print(f"📊 计算得到batch_size: {micro_batch} x {gradient_accumulation} x {world_size} = {effective_batch_size}")
                 return effective_batch_size
             
             # 最后的备选方案：从根配置获取
             if 'train_batch_size' in config:
-                batch_size = config['train_batch_size']
-                print(f"📊 从根配置获取batch_size: {batch_size}")
-                return batch_size
+                return config['train_batch_size']
             
             # 默认值
-            print(f"📊 使用默认batch_size: 32")
             return 32
             
         except Exception as e:
@@ -595,21 +579,10 @@ class TrainingMonitor:
             if dist.is_available() and dist.is_initialized():
                 rank = dist.get_rank()
                 is_main = rank == 0
-                # 只在第一次调用或非主进程时打印
-                if not hasattr(self, '_main_process_checked') or not is_main:
-                    print(f"🔍 分布式训练: rank={rank}, is_main_process={is_main}")
-                    self._main_process_checked = True
                 return is_main
             else:
-                # 只在第一次调用时打印
-                if not hasattr(self, '_main_process_checked'):
-                    print(f"🔍 单GPU训练: is_main_process=True")
-                    self._main_process_checked = True
                 return True  # 非分布式训练时默认为主进程
         except ImportError:
-            if not hasattr(self, '_main_process_checked'):
-                print(f"🔍 torch.distributed不可用: is_main_process=True")
-                self._main_process_checked = True
             return True
     
     def _init_wandb(self):

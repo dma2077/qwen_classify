@@ -22,6 +22,8 @@ class DeepSpeedTrainer:
         if self.dist_ctx.world_size > 1:
             from .utils.distributed import setup_nccl_timeout_env
             setup_nccl_timeout_env()
+            if self.dist_ctx.is_main_process:
+                print("✅ 已设置NCCL超时保护")
         
         # 内存优化配置
         self.enable_gradient_checkpointing = config.get('training', {}).get('gradient_checkpointing', True)
@@ -31,11 +33,9 @@ class DeepSpeedTrainer:
             from training.utils.monitor import TrainingMonitor
             # 不再硬编码flops_profile_freq，让TrainingMonitor从配置文件中读取
             self.monitor = TrainingMonitor(self.config['output_dir'], config)
-            print(f"✅ 主进程：创建完整TrainingMonitor（包含wandb）")
         else:
             from training.utils.monitor import DummyMonitor  
             self.monitor = DummyMonitor(self.config['output_dir'], config)
-            print(f"ℹ️  进程 rank {self.dist_ctx.rank}：使用DummyMonitor（无wandb）")
         
         self.model = None
         self.train_loader = None
@@ -101,28 +101,24 @@ class DeepSpeedTrainer:
         
         # 创建优化器和调度器（如果未提供）
         if optimizer is None:
-            if self.dist_ctx.is_main_process:
-                print("🔧 创建优化器...")
             from optimizer.optimizer import create_optimizer
             optimizer = create_optimizer(model, self.config)
         
         if lr_scheduler is None:
-            if self.dist_ctx.is_main_process:
-                print("🔧 创建学习率调度器...")
             from training.lr_scheduler import create_lr_scheduler
-            # 计算steps_per_epoch
+            # 计算steps_per_epoch - 基于总批次大小
             deepspeed_config = self._get_deepspeed_config()
-            gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
-            steps_per_epoch = len(train_loader) // gradient_accumulation_steps
+            train_batch_size = deepspeed_config.get('train_batch_size', 256)
+            dataset_size = len(train_loader.dataset)
+            steps_per_epoch = dataset_size // train_batch_size
+            if dataset_size % train_batch_size != 0:
+                steps_per_epoch += 1  # 向上取整
             lr_scheduler = create_lr_scheduler(optimizer, self.config, steps_per_epoch)
         
         # 获取DeepSpeed配置
         deepspeed_config = self._get_deepspeed_config()
         
         # 初始化DeepSpeed
-        if self.dist_ctx.is_main_process:
-            print(f"🔧 初始化DeepSpeed...")
-        
         self.model, self.optimizer, _, self.lr_scheduler = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
@@ -130,31 +126,21 @@ class DeepSpeedTrainer:
             config=deepspeed_config
         )
         
-        self.dist_ctx.print_info()
-        self.dist_ctx.print_main(f"模型初始化完成，设备: {self.dist_ctx.device}")
+        if self.dist_ctx.is_main_process:
+            print(f"✅ 模型初始化完成")
         
         # 设置monitor的model引用用于MFU计算
         self.monitor.set_model_ref(self.model)
         
     def _apply_memory_optimizations(self):
         """应用内存优化设置"""
-        if self.dist_ctx.is_main_process:
-            print("🔧 应用内存优化设置...")
-            
         # 1. 梯度检查点
         if self.enable_gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
-            if self.dist_ctx.is_main_process:
-                print("  ✅ 启用梯度检查点")
-        else:
-            if self.dist_ctx.is_main_process:
-                print("  ⏭️ 跳过梯度检查点，优先计算速度")
         
         # 2. 清理GPU缓存
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            if self.dist_ctx.is_main_process:
-                print("  ✅ 清理GPU缓存")
         
     def _get_deepspeed_config(self):
         """获取DeepSpeed配置"""
@@ -182,11 +168,7 @@ class DeepSpeedTrainer:
         
         # 打印配置信息（仅主进程）
         if self.dist_ctx.is_main_process:
-            print(f"🔧 DeepSpeed配置加载成功:")
-            print(f"  • 配置文件: {deepspeed_config_path}")
-            print(f"  • train_batch_size: {deepspeed_config['train_batch_size']}")
-            print(f"  • train_micro_batch_size_per_gpu: {deepspeed_config['train_micro_batch_size_per_gpu']}")
-            print(f"  • gradient_accumulation_steps: {deepspeed_config.get('gradient_accumulation_steps', 1)}")
+            print(f"🔧 DeepSpeed配置: {deepspeed_config['train_micro_batch_size_per_gpu']} x {deepspeed_config.get('gradient_accumulation_steps', 1)} = {deepspeed_config['train_batch_size']}")
         
         return deepspeed_config
         
@@ -227,21 +209,10 @@ class DeepSpeedTrainer:
         if not self.dist_ctx.is_main_process:
             return
             
-        print("="*80)
-        print("🚀 训练配置信息")
-        print("="*80)
-        print(f"📊 数据集配置:")
-        print(f"  • 总数据集大小: {stats['dataset_size']:,}")
-        print(f"  • 每GPU处理样本数: {stats['samples_per_gpu']:,}")
-        print(f"📦 批次配置:")
-        print(f"  • 每GPU微批次大小: {stats['micro_batch_size_per_gpu']}")
-        print(f"  • 梯度累积步数: {stats['gradient_accumulation_steps']}")
-        print(f"  • 总有效批次大小: {stats['train_batch_size']}")
-        print(f"📈 步数统计:")
-        print(f"  • 每GPU DataLoader步数: {stats['dataloader_steps_per_epoch']:,}")
-        print(f"  • 有效训练步数每epoch: {stats['effective_steps_per_epoch']:,}")
-        print(f"  • 总有效训练步数: {stats['total_effective_steps']:,}")
-        print("="*80)
+        print("🚀 训练配置:")
+        print(f"  • 数据集: {stats['dataset_size']:,} 样本")
+        print(f"  • 批次: {stats['micro_batch_size_per_gpu']} x {stats['gradient_accumulation_steps']} = {stats['train_batch_size']}")
+        print(f"  • 步数: {stats['effective_steps_per_epoch']:,} 步/epoch, 总计 {stats['total_effective_steps']:,} 步")
         
     def _prepare_batch_data(self, batch):
         """准备批次数据 - 优化版本"""
@@ -274,9 +245,6 @@ class DeepSpeedTrainer:
         
     def _optimize_dataloader(self):
         """优化数据加载器设置"""
-        if self.dist_ctx.is_main_process:
-            print("🔧 优化数据加载器设置...")
-        
         # 设置DataLoader的优化参数
         if hasattr(self.train_loader, 'pin_memory'):
             self.train_loader.pin_memory = True
@@ -287,16 +255,10 @@ class DeepSpeedTrainer:
             cpu_count = multiprocessing.cpu_count()
             optimal_workers = min(cpu_count, 16)  # 提高上限到16个workers
             self.train_loader.num_workers = optimal_workers
-            
-            if self.dist_ctx.is_main_process:
-                print(f"  ✅ 设置DataLoader workers: {optimal_workers}")
         
         # 设置预取因子
         if hasattr(self.train_loader, 'prefetch_factor'):
             self.train_loader.prefetch_factor = 2
-            
-        if self.dist_ctx.is_main_process:
-            print("  ✅ 启用pin_memory和预取优化")
         
     def _calculate_mfu(self, effective_step, inputs, attention_mask, step_time):
         """计算MFU（Model FLOPs Utilization）"""
@@ -1156,7 +1118,7 @@ class DeepSpeedTrainer:
 
         
     def evaluate(self, step=None, log_to_wandb=True, return_results=False):
-        """评估模型，统一使用多数据集评估逻辑
+        """评估模型，根据数据集数量选择最优评估策略
         
         Args:
             step: 当前步数，如果提供则用于最佳模型保存；否则使用self.current_step
@@ -1174,8 +1136,27 @@ class DeepSpeedTrainer:
                 self.dist_ctx.print_main("⚠️  评估前同步失败，跳过本次评估")
                 return 0.0, 0.0
             
-            # 统一使用多数据集评估函数
-            eval_results = evaluate_multi_dataset(self.model, self.val_loader, self.dist_ctx.device, self.dataset_configs)
+            # 🔥 优化：根据数据集数量选择评估策略
+            dataset_count = len(self.dataset_configs) if self.dataset_configs else 0
+            
+            if dataset_count <= 1:
+                # 单数据集：使用快速评估函数
+                self.dist_ctx.print_main("🚀 使用快速单数据集评估")
+                from .utils.evaluation import evaluate_single_dataset_fast
+                eval_loss, eval_accuracy = evaluate_single_dataset_fast(self.model, self.val_loader, self.dist_ctx.device)
+                
+                # 构造兼容的结果格式
+                eval_results = {
+                    'overall_loss': eval_loss,
+                    'overall_accuracy': eval_accuracy,
+                    'dataset_metrics': {},
+                    'total_samples': len(self.val_loader.dataset),
+                    'total_correct': int(eval_accuracy * len(self.val_loader.dataset))
+                }
+            else:
+                # 多数据集：使用完整的多数据集评估函数
+                self.dist_ctx.print_main("📊 使用多数据集评估")
+                eval_results = evaluate_multi_dataset(self.model, self.val_loader, self.dist_ctx.device, self.dataset_configs)
             
             # 检查评估结果是否有效
             if eval_results is None or not eval_results:

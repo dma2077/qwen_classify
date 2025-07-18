@@ -56,9 +56,6 @@ def parse_args():
 
 def setup_model(config):
     """设置模型"""
-    if is_main_process():
-        print("🔧 设置模型...")
-    
     # 获取损失函数配置
     loss_config = config.get('loss', {'type': 'cross_entropy'})
     
@@ -66,19 +63,11 @@ def setup_model(config):
     dataset_configs = config.get('datasets', {}).get('dataset_configs', {})
     enable_logits_masking = config.get('datasets', {}).get('enable_logits_masking', True)
     
-    # 只在主进程中打印配置信息
+    # 只在主进程中打印关键信息
     if is_main_process():
         print(f"🎯 损失函数: {loss_config.get('type', 'cross_entropy')}")
-        if loss_config.get('type') != 'cross_entropy':
-            print(f"  损失函数参数: {loss_config}")
-        
         if dataset_configs:
-            print(f"🗂️ 多数据集模式:")
-            print(f"  • 数据集数量: {len(dataset_configs)}")
-            print(f"  • Logits Masking: {'启用' if enable_logits_masking else '禁用'}")
-            for dataset_name, dataset_config in dataset_configs.items():
-                num_classes = dataset_config.get('num_classes', 'N/A')
-                print(f"  • {dataset_name}: {num_classes} classes")
+            print(f"🗂️ 数据集: {len(dataset_configs)} 个")
     
     # 创建模型
     model = Qwen2_5_VLForImageClassification(
@@ -90,41 +79,19 @@ def setup_model(config):
     )
     
     if is_main_process():
-        print(f"✅ 模型创建完成: {config['model']['pretrained_name']}")
+        print(f"✅ 模型创建完成")
     return model
 
 def setup_data(config):
     """设置数据加载器"""
-    if is_main_process():
-        print("🔧 设置数据加载器...")
-    
     # 创建数据加载器 - 只传递config参数
     train_loader, val_loader = create_dataloaders(config)
     
-    # 只在主进程中打印信息
+    # 只在主进程中打印关键信息
     if is_main_process():
-        # 获取数据配置用于打印信息
-        data_config = config.get('data', {})
-        training_config = config.get('training', {})
-        
-        print(f"✅ 数据加载器创建完成")
-        print(f"  • 训练集: {len(train_loader.dataset)} 样本")
-        print(f"  • 验证集: {len(val_loader.dataset)} 样本")
-        
-        # 从DeepSpeed配置中获取批次大小
-        if 'deepspeed' in config:
-            if isinstance(config['deepspeed'], str):
-                import json
-                with open(config['deepspeed'], 'r') as f:
-                    deepspeed_config = json.load(f)
-            else:
-                deepspeed_config = config['deepspeed']
-            batch_size = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
-        else:
-            batch_size = training_config.get('batch_size', 8)
-        
-        print(f"  • 批次大小: {batch_size}")
-        print(f"  • Worker数量: {training_config.get('num_workers', 16)}")
+        print("✅ 数据加载器创建完成")
+        print(f"  • 训练集: {len(train_loader.dataset):,} 样本")
+        print(f"  • 验证集: {len(val_loader.dataset):,} 样本")
     
     return train_loader, val_loader
 
@@ -138,17 +105,11 @@ def main():
     set_random_seeds(args.seed)
     
     # 只在主进程中加载和准备配置
-    if is_main_process():
-        print("📋 加载配置文件...")
-    
     with open(args.config, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
     # 验证并设置DeepSpeed配置
     if hasattr(args, 'deepspeed_config') and args.deepspeed_config:
-        if is_main_process():
-            print(f"🔧 使用命令行指定的DeepSpeed配置: {args.deepspeed_config}")
-        
         # 验证DeepSpeed配置文件是否存在
         if not os.path.exists(args.deepspeed_config):
             raise FileNotFoundError(f"DeepSpeed配置文件不存在: {args.deepspeed_config}")
@@ -174,8 +135,6 @@ def main():
     train_loader, val_loader = setup_data(config)
     
     # 创建DeepSpeed训练器
-    if is_main_process():
-        print("🔧 创建DeepSpeed训练器...")
     trainer = DeepSpeedTrainer(config)
     
     # 设置模型和相关组件（优化器和调度器会在DeepSpeed初始化时创建）

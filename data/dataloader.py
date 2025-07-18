@@ -93,40 +93,22 @@ def create_dataloaders(config):
     # 检查是否使用分布式训练
     use_distributed = dist.is_available() and dist.is_initialized()
     
-    # 只在主进程中打印分布式信息
+    # 只在主进程中打印关键信息
     is_main_process = not use_distributed or dist.get_rank() == 0
     
     if is_main_process:
-        print(f"\n分布式检查:")
-        print(f"  • dist.is_available(): {dist.is_available()}")
-        print(f"  • dist.is_initialized(): {dist.is_initialized()}")
-        print(f"  • 使用分布式训练: {use_distributed}")
-        
         # 打印数据集配置信息
         if dataset_configs:
-            print(f"\n📊 数据集配置:")
+            print(f"📊 数据集配置:")
             for dataset_name, config_info in dataset_configs.items():
                 num_classes = config_info.get('num_classes', 'N/A')
                 eval_ratio = config_info.get('eval_ratio', 'N/A')
-                description = config_info.get('description', 'No description')
-                print(f"  • {dataset_name}: {num_classes} classes, eval_ratio={eval_ratio} - {description}")
-        
-        # 打印评估配置
-        if 'train_jsonl_list' in data_config:
-            eval_config = config.get('training', {}).get('evaluation', {})
-            print(f"\n🔍 评估配置:")
-            print(f"  • 训练过程中部分评估: {eval_config.get('partial_eval_during_training', True)}")
-            print(f"  • 训练结束后完整评估: {eval_config.get('full_eval_at_end', True)}")
-            print(f"  • 仅评估最佳模型: {eval_config.get('eval_best_model_only', True)}")
+                print(f"  • {dataset_name}: {num_classes} classes, eval_ratio={eval_ratio}")
     
     # 创建分布式采样器（如果使用分布式训练）
     if use_distributed:
         world_size = dist.get_world_size()
         rank = dist.get_rank()
-        
-        if is_main_process:
-            print(f"  • 世界大小: {world_size}")
-            print(f"  • 当前进程: {rank}")
         
         train_sampler = DistributedSampler(
             train_dataset,
@@ -140,17 +122,11 @@ def create_dataloaders(config):
         )
         shuffle_train = False  # 分布式采样器已经处理了shuffle
         shuffle_val = False
-        
-        if is_main_process:
-            print(f"  • 每个GPU将处理训练样本数: {len(train_sampler)}")
-            print(f"  • 每个GPU将处理验证样本数: {len(val_sampler)}")
     else:
         train_sampler = None
         val_sampler = None
         shuffle_train = True
         shuffle_val = False
-        if is_main_process:
-            print(f"  • 未使用分布式采样器")
     
     # 创建训练数据加载器
     train_loader = DataLoader(

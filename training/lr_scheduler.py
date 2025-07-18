@@ -96,22 +96,16 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     # 只在主进程中打印训练配置信息
     try:
         import torch.distributed as dist
-        is_main_process = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+        # 更可靠的主进程检查：只有在分布式训练中且rank为0的进程才是主进程
+        is_main_process = not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
     except ImportError:
         is_main_process = True
     
     if is_main_process:
-        print(f"\n📈 学习率调度器配置:")
-        print(f"  • 调度器类型: {scheduler_type}")
-        print(f"  • Warmup配置: {warmup_steps_config} ({warmup_type})")
-        print(f"  • 实际Warmup步数: {num_warmup_steps:,}")
-        print(f"  • 总训练步数: {num_training_steps:,}")
-        print(f"  • Warmup比例: {num_warmup_steps/num_training_steps:.1%}")
-        print(f"  • 每GPU微批次大小: {micro_batch_size_per_gpu}")
-        print(f"  • 梯度累积步数: {gradient_accumulation_steps}")
-        print(f"  • 总有效批次大小: {train_batch_size}")
-        print(f"  • 每GPU DataLoader步数: {steps_per_epoch:,}")
-        print(f"  • 有效训练步数每epoch: {effective_steps_per_epoch:,}")
+        print(f"📈 学习率调度器: {scheduler_type}")
+        print(f"  • Warmup: {num_warmup_steps:,} 步 ({num_warmup_steps/num_training_steps:.1%})")
+        print(f"  • 总步数: {num_training_steps:,}")
+        print(f"  • 批次大小: {micro_batch_size_per_gpu} x {gradient_accumulation_steps} = {train_batch_size}")
     
     # 根据调度器类型创建相应的调度器
     if scheduler_type == 'cosine':
@@ -170,13 +164,8 @@ def create_cosine_with_hold_scheduler(optimizer, lr_config, num_warmup_steps, nu
     decay_steps = num_training_steps - num_warmup_steps - hold_steps
     
     if is_main_process:
-        print(f"  • Warmup步数: {num_warmup_steps:,}")
-        print(f"  • Hold平稳期步数: {hold_steps:,}")
-        print(f"  • Cosine衰减步数: {decay_steps:,}")
-        print(f"  • Hold比例: {hold_steps/(num_training_steps-num_warmup_steps):.1%}")
-        print(f"  • 余弦周期数: {num_cycles}")
-        print(f"  • 最终学习率比例: {final_lr_ratio:.1%}")
-        print(f"  • 学习率衰减倍数: {1/final_lr_ratio if final_lr_ratio > 0 else '∞'}x")
+        print(f"  • Hold: {hold_steps:,} 步, Cosine: {decay_steps:,} 步")
+        print(f"  • 最终LR: {final_lr_ratio:.1%}")
     
     return create_custom_cosine_with_hold_scheduler(
         optimizer, num_warmup_steps, hold_steps, num_training_steps, num_cycles, final_lr_ratio
