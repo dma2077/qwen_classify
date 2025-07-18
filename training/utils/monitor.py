@@ -666,6 +666,9 @@ class TrainingMonitor:
                     })
             except Exception as config_error:
                 print(f"⚠️  wandb配置更新失败: {config_error}")
+                print(f"   config内容: {self.config}")
+                import traceback
+                traceback.print_exc()
             
             self.use_wandb = True
             print("✅ wandb initialized successfully")
@@ -696,9 +699,17 @@ class TrainingMonitor:
                     print("🔧 WandB初始化数据已提交")
             except Exception as display_error:
                 print(f"⚠️  wandb链接显示失败: {display_error}")
+                print(f"   wandb.run状态: {getattr(wandb.run, 'state', 'unknown') if wandb.run else 'None'}")
+                import traceback
+                traceback.print_exc()
             
         except Exception as e:
             print(f"❌ Failed to initialize wandb: {e}")
+            print(f"   wandb_config: {wandb_config}")
+            print(f"   is_main_process: {is_main_process}")
+            print(f"   WANDB_AVAILABLE: {WANDB_AVAILABLE}")
+            import traceback
+            traceback.print_exc()
             self.use_wandb = False
     
     def set_model_ref(self, model):
@@ -881,7 +892,12 @@ class TrainingMonitor:
                 print(f"    - {target_mfu*100:.0f}% MFU: {required_time:.3f}秒/步")
                 
         except Exception as e:
-            print(f"显示MFU信息错误: {e}")
+            print(f"❌ 显示MFU信息错误: {e}")
+            print(f"   actual_flops: {self.actual_flops}")
+            print(f"   batch_size: {self.batch_size}")
+            print(f"   actual_seq_length: {self.actual_seq_length}")
+            import traceback
+            traceback.print_exc()
     
     def set_actual_flops(self, flops: float, seq_length: int = None):
         """设置实际FLOPs（用于分布式训练中的同步）"""
@@ -905,7 +921,13 @@ class TrainingMonitor:
             return int(avg_seq_length)
             
         except Exception as e:
-            print(f"计算实际序列长度错误: {e}")
+            print(f"❌ 计算实际序列长度错误: {e}")
+            print(f"   attention_mask类型: {type(attention_mask)}")
+            print(f"   attention_mask形状: {attention_mask.shape if attention_mask is not None else 'None'}")
+            print(f"   actual_seq_length: {self.actual_seq_length}")
+            print(f"   seq_length: {self.seq_length}")
+            import traceback
+            traceback.print_exc()
             return self.actual_seq_length if self.actual_seq_length is not None else self.seq_length
     
     def start_training(self):
@@ -949,97 +971,11 @@ class TrainingMonitor:
         
         self.step_logs.append(log_entry)
         
-        # 🔥 修复WandB记录频率 - 确保training和perf组指标正常显示，使用动态频率
+        # 🔥 修复：log_step方法只负责本地日志记录，WandB记录由trainer统一处理
+        # 这样可以避免重复记录和step冲突问题
         if self.use_wandb and self._is_main_process() and not skip_wandb:
-            # 使用动态频率配置
-            should_log_training = (step % self.freq['training_log_freq'] == 0)
-            
-            if should_log_training:
-                # 准备基础训练指标
-                wandb_data = {
-                    "training/loss": float(loss),
-                    "training/lr": float(learning_rate), 
-                    "training/epoch": float(epoch),
-                    "training/grad_norm": float(grad_norm),
-                    "step": int(step)  # 🔥 添加统一的step字段
-                }
-                
-                # 使用动态性能指标频率
-                should_log_perf = (step % self.freq['perf_log_freq'] == 0)
-                
-                if should_log_perf:
-                    # 添加性能指标到perf组
-                    wandb_data.update({
-                        "perf/step_time": float(step_time),
-                        "perf/steps_per_second": float(1.0 / step_time) if step_time > 0 else 0.0,
-                    })
-                    
-                    # MFU和FLOPs相关指标（如果可用）- 统一在perf组记录
-                    if self.model_ref is not None and self.actual_flops is not None:
-                        # 优先使用当前batch的实际序列长度
-                        if attention_mask is not None:
-                            current_seq_length = self._calculate_actual_seq_length(attention_mask)
-                        elif self.actual_seq_length is not None:
-                            current_seq_length = self.actual_seq_length
-                        else:
-                            current_seq_length = self.seq_length
-                        
-                        # 使用profiler计算MFU - 每次记录性能指标时都计算
-                        if step % self.flops_profile_freq == 0:
-                            # 每flops_profile_freq步使用profiler计算MFU（更精确）
-                            mfu = calculate_mfu_with_profiler(self.model_ref, self.batch_size, current_seq_length, step_time)
-                            print(f"🔍 步骤 {step}: 使用profiler计算MFU = {mfu:.4f}")
-                        else:
-                            # 其他步骤使用估算的MFU（基于实际FLOPs）
-                            if self.actual_flops is not None and step_time > 0:
-                                # 使用实际FLOPs计算MFU
-                                actual_flops_per_second = self.actual_flops / step_time
-                                peak_flops_per_second = get_gpu_peak_flops()
-                                mfu = actual_flops_per_second / peak_flops_per_second
-                                mfu = min(mfu, 1.0)  # 限制在100%以内
-                            else:
-                                # 如果没有实际FLOPs数据，返回0
-                                mfu = 0.0
-                        
-                        # 添加性能相关指标到perf组
-                        current_flops = self.actual_flops if self.actual_flops is not None else 0.0
-                        wandb_data.update({
-                            "perf/mfu": float(mfu),
-                            "perf/mfu_percent": float(mfu * 100),
-                            "perf/tokens_per_second": float(self.batch_size * current_seq_length / step_time),
-                            "perf/samples_per_second": float(self.batch_size / step_time),
-                            "perf/actual_flops": float(current_flops),
-                            "perf/actual_seq_length": float(current_seq_length),
-                            "perf/flops_per_second": float(current_flops / step_time) if step_time > 0 else 0.0,
-                        })
-                        
-                        # 如果有实时FLOPs测量，添加标记
-                        if real_time_flops is not None:
-                            wandb_data["perf/real_time_measurement"] = 1.0
-                        else:
-                            wandb_data["perf/real_time_measurement"] = 0.0
-                
-                # 使用动态GPU监控频率
-                should_log_gpu = (step % self.freq['gpu_log_freq'] == 0)
-                if should_log_gpu:
-                    try:
-                        if torch.cuda.is_available():
-                            # 获取GPU内存使用情况
-                            memory_allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
-                            memory_reserved = torch.cuda.memory_reserved() / (1024**3)    # GB
-                            memory_total = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
-                            memory_utilization = (memory_allocated / memory_total) * 100
-                            
-                            wandb_data.update({
-                                "perf/gpu_memory_allocated_gb": float(memory_allocated),
-                                "perf/gpu_memory_reserved_gb": float(memory_reserved),
-                                "perf/gpu_memory_utilization_percent": float(memory_utilization),
-                            })
-                    except Exception as e:
-                        pass  # 忽略GPU监控错误
-                
-                # 一次性记录所有指标
-                wandb.log(wandb_data, step=int(step), commit=True)
+            # 只记录基础信息到本地日志，WandB记录由trainer的_build_training_metrics处理
+            pass
         
         self.step_start_time = current_time
         
@@ -1101,9 +1037,17 @@ class TrainingMonitor:
                 
             except Exception as e:
                 print(f"❌ 记录eval指标失败: {e}")
+                print(f"   step: {step}")
+                print(f"   eval_loss: {eval_loss}")
+                print(f"   eval_accuracy: {eval_accuracy}")
+                print(f"   additional_metrics: {additional_metrics}")
+                print(f"   use_wandb: {self.use_wandb}")
+                print(f"   is_main_process: {self._is_main_process()}")
+                import traceback
+                traceback.print_exc()
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
-        """通用的指标记录方法 - 确保eval指标正确记录"""
+        """通用的指标记录方法 - 确保所有指标正确记录到WandB"""
         # 检查是否是主进程且wandb可用
         if not self.use_wandb or not self._is_main_process():
             return
@@ -1118,15 +1062,24 @@ class TrainingMonitor:
                 print("⚠️ WandB未初始化，跳过指标记录")
                 return
         except Exception as e:
+            print(f"❌ 导入WandB失败: {e}")
+            print(f"   请确保已安装wandb: pip install wandb")
+            import traceback
+            traceback.print_exc()
             return
 
         try:
             # 确保所有值都是可序列化的
             log_data = {}
             eval_metrics_count = 0
+            training_metrics_count = 0
+            perf_metrics_count = 0
             eval_metrics_list = []
+            training_metrics_list = []
+            perf_metrics_list = []
             
             for key, value in metrics.items():
+                # 处理不同类型的值
                 if isinstance(value, (int, float)):
                     log_data[key] = float(value)
                 elif hasattr(value, 'item'):  # torch tensor
@@ -1134,16 +1087,22 @@ class TrainingMonitor:
                 else:
                     log_data[key] = value
                 
-                # 统计eval指标数量和名称
+                # 统计各类指标数量和名称
                 if 'eval/' in key:
                     eval_metrics_count += 1
                     eval_metrics_list.append(key)
+                elif 'training/' in key:
+                    training_metrics_count += 1
+                    training_metrics_list.append(key)
+                elif 'perf/' in key:
+                    perf_metrics_count += 1
+                    perf_metrics_list.append(key)
             
             # 🔥 关键修复：确保所有指标都有统一的step字段
             if step is not None:
-                log_data["step"] = int(step)  # 添加step字段到数据中
+                log_data["step"] = int(step)
             
-            # 记录指标
+            # 记录指标到WandB
             if step is not None:
                 wandb.log(log_data, step=int(step), commit=commit)
                 step_info = f"step={step}"
@@ -1151,35 +1110,59 @@ class TrainingMonitor:
                 wandb.log(log_data, commit=commit)
                 step_info = "auto-step"
             
-            # 如果包含eval指标，特别说明
+            # 输出详细的记录信息
+            total_metrics = len(log_data)
+            print(f"📊 WandB记录完成 ({step_info}):")
+            print(f"   📈 总指标数: {total_metrics}")
+            
+            if training_metrics_count > 0:
+                print(f"   🏃 Training指标: {training_metrics_count}个 - {training_metrics_list}")
+            
             if eval_metrics_count > 0:
-                print(f"📊 已记录 {eval_metrics_count} 个eval指标到WandB ({step_info})")
-                print(f"   eval指标: {eval_metrics_list}")
-                print(f"   包含统一step: {log_data.get('step', 'N/A')}")
+                print(f"   📊 Eval指标: {eval_metrics_count}个 - {eval_metrics_list}")
+            
+            if perf_metrics_count > 0:
+                print(f"   ⚡ Perf指标: {perf_metrics_count}个 - {perf_metrics_list}")
+            
+            # 验证WandB记录状态
+            if wandb.run is not None:
+                run_state = getattr(wandb.run, 'state', 'unknown')
+                print(f"   🔍 WandB状态: {run_state} | 项目: {wandb.run.project} | ID: {wandb.run.id}")
                 
-                # 🔥 额外验证：检查WandB run状态
-                if wandb.run is not None:
-                    # 使用兼容的状态检查方法
-                    run_state = getattr(wandb.run, 'state', 'unknown')
-                    print(f"   WandB run状态: {run_state}")
-                    print(f"   WandB项目: {wandb.run.project}")
-                    print(f"   WandB run ID: {wandb.run.id}")
-                    print(f"   实际记录的数据keys: {list(log_data.keys())}")
-                    
-                                    # 🔥 确保数据提交到WandB服务器
-                try:
-                    # 强制提交当前数据
-                    wandb.log({}, commit=True)
-                    print(f"   ✅ WandB数据提交完成")
-                except Exception as commit_error:
-                    print(f"   ⚠️ WandB提交失败: {commit_error}")
-                else:
-                    print("   ⚠️ WandB run为None！")
+                # 如果包含eval指标，确保数据提交
+                if eval_metrics_count > 0 and commit:
+                    try:
+                        # 强制提交数据
+                        wandb.log({}, commit=True)
+                        print(f"   ✅ Eval数据强制提交完成")
+                    except Exception as commit_error:
+                        print(f"   ❌ 强制提交失败: {commit_error}")
+                        print(f"      WandB run状态: {getattr(wandb.run, 'state', 'unknown')}")
+                        print(f"      WandB项目: {getattr(wandb.run, 'project', 'unknown')}")
+                        import traceback
+                        traceback.print_exc()
             
         except Exception as e:
-            print(f"❌ 记录指标到wandb失败: {e}")
+            print(f"❌ 记录指标到WandB失败: {e}")
             print(f"   尝试记录的指标: {list(metrics.keys())}")
             print(f"   step: {step}")
+            print(f"   commit: {commit}")
+            print(f"   use_wandb: {self.use_wandb}")
+            print(f"   is_main_process: {self._is_main_process()}")
+            print(f"   WANDB_AVAILABLE: {WANDB_AVAILABLE}")
+            
+            # 尝试获取更多WandB状态信息
+            try:
+                import wandb
+                if wandb.run is not None:
+                    print(f"   WandB run状态: {getattr(wandb.run, 'state', 'unknown')}")
+                    print(f"   WandB项目: {getattr(wandb.run, 'project', 'unknown')}")
+                    print(f"   WandB run ID: {getattr(wandb.run, 'id', 'unknown')}")
+                else:
+                    print(f"   WandB run为None")
+            except Exception as wandb_info_error:
+                print(f"   获取WandB状态信息失败: {wandb_info_error}")
+            
             import traceback
             traceback.print_exc()
     
@@ -1198,7 +1181,12 @@ class TrainingMonitor:
             with open(self.log_file, 'w', encoding='utf-8') as f:
                 json.dump(serializable_logs, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"保存日志失败: {e}")
+            print(f"❌ 保存日志失败: {e}")
+            print(f"   log_file: {self.log_file}")
+            print(f"   output_dir: {self.output_dir}")
+            print(f"   logs keys: {list(logs.keys()) if 'logs' in locals() else 'N/A'}")
+            import traceback
+            traceback.print_exc()
     
     def finish_training(self):
         """结束训练 - 优化版本，减少WandB调用"""

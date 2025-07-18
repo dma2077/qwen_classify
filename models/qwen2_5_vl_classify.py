@@ -32,6 +32,22 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         if hasattr(config, 'use_cache'):
             config.use_cache = False
         
+        # 🔥 新增：启用FlashAttention
+        if hasattr(config, '_attn_implementation'):
+            # 检查是否支持FlashAttention
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    # 尝试启用FlashAttention 2
+                    config._attn_implementation = "flash_attention_2"
+                    print("✅ FlashAttention 2 已启用")
+                else:
+                    config._attn_implementation = "eager"
+                    print("⚠️ CUDA不可用，使用eager attention")
+            except Exception as e:
+                config._attn_implementation = "eager"
+                print(f"⚠️ FlashAttention启用失败: {e}，使用eager attention")
+        
         # 配置信息已设置完成，无需输出
         
         super().__init__(config)

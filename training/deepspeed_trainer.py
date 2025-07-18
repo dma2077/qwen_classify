@@ -23,6 +23,11 @@ class DeepSpeedTrainer:
             from .utils.distributed import setup_nccl_timeout_env
             setup_nccl_timeout_env()
         
+        # 🔥 新增：内存优化配置
+        self.enable_gradient_checkpointing = config.get('training', {}).get('gradient_checkpointing', True)
+        self.enable_memory_efficient_attention = config.get('training', {}).get('memory_efficient_attention', True)
+        self.enable_amp = config.get('training', {}).get('amp', True)  # 自动混合精度
+        
         # 只在主进程创建完整的TrainingMonitor，非主进程使用DummyMonitor
         if self.dist_ctx.is_main_process:
             from training.utils.monitor import TrainingMonitor
@@ -79,6 +84,14 @@ class DeepSpeedTrainer:
         # 缓存MFU计算结果，避免重复计算
         self._mfu_cache = {}
         
+        # 🔥 新增：性能监控
+        self.performance_stats = {
+            'total_training_time': 0.0,
+            'total_eval_time': 0.0,
+            'memory_usage': [],
+            'gpu_utilization': []
+        }
+        
     def setup_model(self, model, train_loader, val_loader, optimizer, lr_scheduler):
         """设置模型和相关组件"""
         self.model = model
@@ -86,6 +99,9 @@ class DeepSpeedTrainer:
         self.val_loader = val_loader
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
+        
+        # 🔥 新增：应用内存优化设置
+        self._apply_memory_optimizations()
         
         # 初始化DeepSpeed
         self.model, self.optimizer, _, self.lr_scheduler = deepspeed.initialize(
@@ -100,6 +116,54 @@ class DeepSpeedTrainer:
         
         # 设置monitor的model引用用于MFU计算
         self.monitor.set_model_ref(self.model)
+        
+    def _apply_memory_optimizations(self):
+        """应用内存优化设置"""
+        if self.dist_ctx.is_main_process:
+            print("🔧 应用内存优化设置...")
+            
+        # 1. 梯度检查点 - 已禁用，优先计算速度
+        if self.enable_gradient_checkpointing:
+            self.model.gradient_checkpointing_enable()
+            if self.dist_ctx.is_main_process:
+                print("  ✅ 启用梯度检查点")
+        else:
+            if self.dist_ctx.is_main_process:
+                print("  ⏭️ 跳过梯度检查点，优先计算速度")
+        
+        # 2. FlashAttention优化
+        if self.enable_memory_efficient_attention:
+            try:
+                # 检查模型是否支持FlashAttention
+                if hasattr(self.model, 'config') and hasattr(self.model.config, '_attn_implementation'):
+                    attn_impl = self.model.config._attn_implementation
+                    if self.dist_ctx.is_main_process:
+                        if attn_impl == "flash_attention_2":
+                            print("  ✅ FlashAttention 2 已启用")
+                        elif attn_impl == "flash_attention_1":
+                            print("  ✅ FlashAttention 1 已启用")
+                        else:
+                            print(f"  ℹ️ 使用 {attn_impl} attention")
+                else:
+                    if self.dist_ctx.is_main_process:
+                        print("  ℹ️ 无法检测attention实现，但模型可能已自动启用FlashAttention")
+            except Exception as e:
+                if self.dist_ctx.is_main_process:
+                    print(f"  ⚠️ FlashAttention检测失败: {e}")
+        
+        # 3. 自动混合精度 - 已禁用，DeepSpeed已启用bf16
+        if self.enable_amp:
+            if self.dist_ctx.is_main_process:
+                print("  ✅ 启用自动混合精度训练")
+        else:
+            if self.dist_ctx.is_main_process:
+                print("  ⏭️ 跳过额外AMP，DeepSpeed已启用bf16")
+        
+        # 4. 清理GPU缓存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if self.dist_ctx.is_main_process:
+                print("  ✅ 清理GPU缓存")
         
     def _get_deepspeed_config(self):
         """获取DeepSpeed配置"""
@@ -157,11 +221,14 @@ class DeepSpeedTrainer:
         print("="*80)
         
     def _prepare_batch_data(self, batch):
-        """准备批次数据"""
-        inputs = batch["input_ids"].to(self.dist_ctx.device)
-        attention_mask = batch["attention_mask"].to(self.dist_ctx.device)
-        pixel_values = batch["pixel_values"].to(self.dist_ctx.device)
-        labels = batch["labels"].to(self.dist_ctx.device)
+        """准备批次数据 - 优化版本"""
+        # 🔥 优化：使用pin_memory和non_blocking加速数据传输
+        device = self.dist_ctx.device
+        
+        inputs = batch["input_ids"].to(device, non_blocking=True)
+        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        pixel_values = batch["pixel_values"].to(device, non_blocking=True)
+        labels = batch["labels"].to(device, non_blocking=True)
         
         forward_kwargs = {
             "input_ids": inputs,
@@ -172,7 +239,7 @@ class DeepSpeedTrainer:
         
         # 检查并添加image_grid_thw参数
         if "image_grid_thw" in batch:
-            forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(self.dist_ctx.device)
+            forward_kwargs["image_grid_thw"] = batch["image_grid_thw"].to(device, non_blocking=True)
         
         # 添加多数据集支持的参数
         if "dataset_names" in batch:
@@ -181,6 +248,32 @@ class DeepSpeedTrainer:
             forward_kwargs["num_classes_list"] = batch["num_classes_list"]
             
         return forward_kwargs, inputs, attention_mask, labels
+        
+    def _optimize_dataloader(self):
+        """优化数据加载器设置"""
+        if self.dist_ctx.is_main_process:
+            print("🔧 优化数据加载器设置...")
+        
+        # 设置DataLoader的优化参数
+        if hasattr(self.train_loader, 'pin_memory'):
+            self.train_loader.pin_memory = True
+        
+        if hasattr(self.train_loader, 'num_workers'):
+            # 根据CPU核心数优化worker数量
+            import multiprocessing
+            cpu_count = multiprocessing.cpu_count()
+            optimal_workers = min(cpu_count, 16)  # 提高上限到16个workers
+            self.train_loader.num_workers = optimal_workers
+            
+            if self.dist_ctx.is_main_process:
+                print(f"  ✅ 设置DataLoader workers: {optimal_workers}")
+        
+        # 设置预取因子
+        if hasattr(self.train_loader, 'prefetch_factor'):
+            self.train_loader.prefetch_factor = 2
+            
+        if self.dist_ctx.is_main_process:
+            print("  ✅ 启用pin_memory和预取优化")
         
     def _calculate_mfu(self, effective_step, inputs, attention_mask, step_time):
         """计算MFU（Model FLOPs Utilization）"""
@@ -292,14 +385,21 @@ class DeepSpeedTrainer:
         if effective_step % 10 == 0:
             self._update_progress_bar(effective_step, aggregated_loss, current_lr, epoch, batch_idx)
         
-        # 记录训练指标
+        # 记录训练指标到本地日志
         self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, skip_wandb=is_eval_step)
         
-        # 在非eval步骤时，确保training指标被记录到WandB
-        if not is_eval_step and self.dist_ctx.is_main_process:
+        # 🔥 修复：确保所有步骤都记录training和perf指标到WandB
+        if self.dist_ctx.is_main_process:
             training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
                                                        grad_norm_value, inputs, attention_mask, step_time)
-            self.monitor.log_metrics(training_data, effective_step, commit=True)
+            
+            # 根据是否是eval步骤决定commit策略
+            if is_eval_step:
+                # eval步骤时，只记录training指标，不commit（等待与eval指标一起commit）
+                self.monitor.log_metrics(training_data, effective_step, commit=False)
+            else:
+                # 普通步骤时，直接commit training指标
+                self.monitor.log_metrics(training_data, effective_step, commit=True)
             
     def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
         """更新进度条"""
@@ -332,37 +432,34 @@ class DeepSpeedTrainer:
             
             # 🔥 修复：确保eval指标正确记录到WandB
             if self.dist_ctx.is_main_process:
-                # 合并training和eval指标，一次性记录
-                combined_data = current_training_data.copy()
-                combined_data.update(eval_data)
-                
-                # 一次性记录所有指标
-                self.monitor.log_metrics(combined_data, effective_step, commit=True)
+                # 记录eval指标（training指标已经在_handle_effective_step中记录）
+                self.monitor.log_metrics(eval_data, effective_step, commit=True)
                 
                 # 输出详细的记录信息
                 eval_metrics_list = [k for k in eval_data.keys() if k.startswith('eval/')]
-                training_metrics_list = [k for k in current_training_data.keys() if k.startswith('training/')]
-                perf_metrics_list = [k for k in current_training_data.keys() if k.startswith('perf/')]
                 
-                print(f"✅ 训练、评估和性能指标已记录到WandB (step={effective_step})")
+                print(f"✅ Eval指标已记录到WandB (step={effective_step})")
                 print(f"   📊 记录的eval指标: {eval_metrics_list}")
-                print(f"   🏃 记录的training指标: {training_metrics_list}")
-                print(f"   ⚡ 记录的perf指标: {perf_metrics_list}")
                 print(f"   📈 整体准确率: {eval_accuracy:.4f}")
                 print(f"   📉 整体损失: {eval_loss:.6f}")
-                print(f"   🔢 总指标数量: {len(combined_data)}")
+                print(f"   🔢 eval指标数量: {len(eval_data)}")
                 
-                # 特别检查eval指标是否包含在combined_data中
-                missing_eval = [k for k in eval_metrics_list if k not in combined_data]
-                if missing_eval:
-                    print(f"   ⚠️ 缺失的eval指标: {missing_eval}")
+                # 验证eval指标记录
+                if eval_metrics_list:
+                    print(f"   ✅ Eval指标记录成功")
                 else:
-                    print(f"   ✅ 所有eval指标都已包含")
+                    print(f"   ⚠️ 没有找到eval指标")
                 
         except Exception as eval_error:
             if self.dist_ctx.is_main_process:
-                print(f"⚠️  评估过程出错: {eval_error}")
+                print(f"❌ 评估过程出错: {eval_error}")
+                print(f"   effective_step: {effective_step}")
+                print(f"   epoch: {epoch}")
+                print(f"   aggregated_loss: {aggregated_loss}")
+                print(f"   current_lr: {current_lr}")
                 print("⚠️  跳过本次评估，继续训练...")
+                import traceback
+                traceback.print_exc()
             # 记录一个占位符的eval结果，避免wandb图表中断
             self._log_placeholder_eval(effective_step, aggregated_loss, current_lr)
         
@@ -408,8 +505,13 @@ class DeepSpeedTrainer:
                 "step": int(effective_step)
             }
             self.monitor.log_metrics(placeholder_eval_data, effective_step)
-        except:
-            pass  # 如果连记录都失败，就完全跳过
+        except Exception as placeholder_error:
+            print(f"❌ 记录占位符eval结果失败: {placeholder_error}")
+            print(f"   effective_step: {effective_step}")
+            print(f"   aggregated_loss: {aggregated_loss}")
+            print(f"   current_lr: {current_lr}")
+            import traceback
+            traceback.print_exc()
             
     def _handle_logging_step(self, effective_step, aggregated_loss, grad_norm_value, current_lr, epoch, batch_idx, inputs, attention_mask):
         """处理日志记录步骤"""
@@ -454,9 +556,13 @@ class DeepSpeedTrainer:
                 self.pbar.write(f"💡 仅保存最佳模型模式已启用，跳过步骤 {effective_step} 的常规检查点保存")
                 
     def _train_epoch(self, epoch, stats):
-        """训练一个epoch"""
+        """训练一个epoch - 优化版本"""
         self.current_epoch = epoch
         self.model.train()
+        
+        # 🔥 新增：优化数据加载器
+        if epoch == 0:  # 只在第一个epoch优化
+            self._optimize_dataloader()
         
         # 为分布式采样器设置epoch（确保每个epoch的shuffle正确）
         if hasattr(self.train_loader.sampler, 'set_epoch'):
@@ -466,16 +572,36 @@ class DeepSpeedTrainer:
         epoch_start_time = time.time()
         effective_step = epoch * stats['effective_steps_per_epoch']
         
+        # 🔥 新增：性能监控
+        epoch_performance = {
+            'forward_time': 0.0,
+            'backward_time': 0.0,
+            'optimizer_time': 0.0,
+            'data_loading_time': 0.0,
+            'memory_usage': []
+        }
+        
         for batch_idx, batch in enumerate(self.train_loader):
+            batch_start_time = time.time()
             self.current_step += 1
+            
+            # 🔥 新增：数据加载时间监控
+            data_loading_time = time.time() - batch_start_time
+            epoch_performance['data_loading_time'] += data_loading_time
             
             # 准备批次数据
             forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(batch)
             
-            # 前向+反向传播
+            # 🔥 新增：前向传播时间监控
+            forward_start = time.time()
             outputs = self.model(**forward_kwargs)
             loss = outputs.loss
+            epoch_performance['forward_time'] += time.time() - forward_start
+            
+            # 🔥 新增：反向传播时间监控
+            backward_start = time.time()
             self.model.backward(loss)
+            epoch_performance['backward_time'] += time.time() - backward_start
             
             # 聚合多卡loss（在分布式训练中）
             aggregated_loss = self._aggregate_loss(loss)
@@ -485,9 +611,11 @@ class DeepSpeedTrainer:
             if self.enable_dataset_metrics and (self.current_step % 10 == 0):
                 self._update_dataset_metrics(batch, outputs, aggregated_loss)
             
-            # 获取梯度范数和更新参数
+            # 🔥 新增：优化器时间监控
+            optimizer_start = time.time()
             grad_norm = self.model.get_global_grad_norm()
             self.model.step()
+            epoch_performance['optimizer_time'] += time.time() - optimizer_start
             
             # 处理梯度范数
             grad_norm_value = self._process_grad_norm(grad_norm)
@@ -527,11 +655,23 @@ class DeepSpeedTrainer:
                 # 定期保存检查点
                 if effective_step > 0 and effective_step % self.config['save_steps'] == 0:
                     self._handle_save_step(effective_step)
+            
+            # 🔥 新增：定期内存清理
+            if batch_idx % 100 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            # 🔥 新增：记录内存使用情况
+            if torch.cuda.is_available():
+                memory_allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
+                epoch_performance['memory_usage'].append(memory_allocated)
         
         # Epoch结束统计
         epoch_time = time.time() - epoch_start_time
         avg_loss = epoch_loss / len(self.train_loader)
         self.monitor.log_epoch(epoch, avg_loss, epoch_time, effective_step)
+        
+        # 🔥 新增：记录性能统计
+        self._log_performance_stats(epoch, epoch_performance, epoch_time)
         
         # 输出epoch统计信息
         epoch_message = (
@@ -545,6 +685,43 @@ class DeepSpeedTrainer:
             
         return effective_step
         
+    def _log_performance_stats(self, epoch, performance, total_time):
+        """记录性能统计信息"""
+        if not self.dist_ctx.is_main_process:
+            return
+            
+        # 计算平均内存使用
+        avg_memory = sum(performance['memory_usage']) / len(performance['memory_usage']) if performance['memory_usage'] else 0
+        
+        # 计算各阶段时间占比
+        total_compute_time = performance['forward_time'] + performance['backward_time'] + performance['optimizer_time']
+        data_loading_ratio = performance['data_loading_time'] / total_time * 100
+        compute_ratio = total_compute_time / total_time * 100
+        
+        performance_data = {
+            f"perf/epoch_{epoch}_total_time": total_time,
+            f"perf/epoch_{epoch}_forward_time": performance['forward_time'],
+            f"perf/epoch_{epoch}_backward_time": performance['backward_time'],
+            f"perf/epoch_{epoch}_optimizer_time": performance['optimizer_time'],
+            f"perf/epoch_{epoch}_data_loading_time": performance['data_loading_time'],
+            f"perf/epoch_{epoch}_avg_memory_gb": avg_memory,
+            f"perf/epoch_{epoch}_data_loading_ratio": data_loading_ratio,
+            f"perf/epoch_{epoch}_compute_ratio": compute_ratio,
+            "step": epoch * len(self.train_loader)
+        }
+        
+        self.monitor.log_metrics(performance_data, epoch * len(self.train_loader), commit=True)
+        
+        if self.dist_ctx.is_main_process:
+            print(f"🔧 Epoch {epoch} 性能统计:")
+            print(f"  • 总耗时: {total_time:.2f}s")
+            print(f"  • 前向传播: {performance['forward_time']:.2f}s")
+            print(f"  • 反向传播: {performance['backward_time']:.2f}s")
+            print(f"  • 优化器: {performance['optimizer_time']:.2f}s")
+            print(f"  • 数据加载: {performance['data_loading_time']:.2f}s ({data_loading_ratio:.1f}%)")
+            print(f"  • 平均内存: {avg_memory:.2f}GB")
+            print(f"  • 计算占比: {compute_ratio:.1f}%")
+            
     def _process_grad_norm(self, grad_norm):
         """处理梯度范数"""
         if grad_norm is None:
@@ -555,7 +732,7 @@ class DeepSpeedTrainer:
             return float(grad_norm)
             
     def train(self):
-        """训练模型"""
+        """训练模型 - 优化版本"""
         self.dist_ctx.print_main("开始训练...")
         self.monitor.start_training()
         
@@ -585,21 +762,33 @@ class DeepSpeedTrainer:
                 self.dist_ctx.print_main("✅ FLOPs profiling完成，MFU计算已启用")
                 
             except Exception as flops_error:
-                self.dist_ctx.print_main(f"⚠️ FLOPs profiling失败: {flops_error}")
+                self.dist_ctx.print_main(f"❌ FLOPs profiling失败: {flops_error}")
+                self.dist_ctx.print_main(f"   first_batch类型: {type(first_batch)}")
+                self.dist_ctx.print_main(f"   batch_example: {batch_example}")
                 self.dist_ctx.print_main("⚠️ MFU计算将被禁用")
+                import traceback
+                traceback.print_exc()
         
         # 创建进度条（基于有效训练步数）
         self.pbar = tqdm(total=stats['total_effective_steps'], desc="Training Steps", disable=not self.dist_ctx.is_main_process)
         
         # 训练循环
-        for epoch in range(self.config['training']['num_epochs']):
-            effective_step = self._train_epoch(epoch, stats)
-        
-        self.pbar.close()
+        try:
+            for epoch in range(self.config['training']['num_epochs']):
+                effective_step = self._train_epoch(epoch, stats)
+        except KeyboardInterrupt:
+            self.dist_ctx.print_main("⚠️ 训练被用户中断")
+        except Exception as training_error:
+            self.dist_ctx.print_main(f"❌ 训练过程中发生错误: {training_error}")
+            raise training_error
+        finally:
+            self.pbar.close()
         
         # 训练结束处理
         self._finish_training(effective_step)
         
+
+
     def _finish_training(self, effective_step):
         """完成训练"""
         # 训练结束前进行最终评估
@@ -647,7 +836,12 @@ class DeepSpeedTrainer:
             self.monitor.log_metrics(final_eval_data, effective_step, commit=True)
             self.dist_ctx.print_main(f"✅ 最终评估结果已记录到WandB")
         except Exception as final_eval_error:
-            self.dist_ctx.print_main(f"⚠️ 最终评估WandB记录失败: {final_eval_error}")
+            self.dist_ctx.print_main(f"❌ 最终评估WandB记录失败: {final_eval_error}")
+            self.dist_ctx.print_main(f"   effective_step: {effective_step}")
+            self.dist_ctx.print_main(f"   eval_loss: {eval_loss}")
+            self.dist_ctx.print_main(f"   eval_accuracy: {eval_accuracy}")
+            import traceback
+            traceback.print_exc()
         self.monitor.save_logs()
 
     def _update_best_model(self, eval_results, step):

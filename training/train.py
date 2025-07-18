@@ -13,8 +13,14 @@ import deepspeed
 import random
 import numpy as np
 
-# 添加项目根目录到Python路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 🔥 新增：设置FlashAttention环境变量
+os.environ["FLASH_ATTENTION_FORCE_ENABLE"] = "1"
+os.environ["FLASH_ATTENTION_2"] = "1"
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 def set_random_seeds(seed=42):
     """设置随机种子确保可重现性"""
