@@ -35,4 +35,16 @@ def prepare_config(config):
     if 'output_dir' not in config and 'output_dir' in training_config:
         config['output_dir'] = training_config['output_dir']
     
+    # 验证DeepSpeed配置（现在总是通过命令行传入）
+    if 'deepspeed' not in config:
+        raise ValueError("DeepSpeed配置未找到！请使用--deepspeed_config参数指定配置文件")
+    
+    deepspeed_config = config['deepspeed']
+    if not isinstance(deepspeed_config, str):
+        raise ValueError("DeepSpeed配置必须是文件路径字符串")
+    
+    import os
+    if not os.path.exists(deepspeed_config):
+        raise FileNotFoundError(f"DeepSpeed配置文件不存在: {deepspeed_config}")
+    
     return config 

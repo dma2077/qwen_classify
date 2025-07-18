@@ -48,7 +48,7 @@ def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="Qwen2.5-VL图像分类完整训练")
     parser.add_argument("--config", type=str, required=True, help="配置文件路径")
-    parser.add_argument("--deepspeed_config", type=str, help="DeepSpeed配置文件路径")
+    parser.add_argument("--deepspeed_config", type=str, required=True, help="DeepSpeed配置文件路径")
     parser.add_argument("--local_rank", type=int, default=-1, help="本地进程排名")
     parser.add_argument("--resume_from", type=str, help="恢复训练的检查点路径")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
@@ -172,14 +172,16 @@ def main():
     with open(args.config, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
-    # 如果命令行传入了DeepSpeed配置，则覆盖YAML中的配置
-    if args.deepspeed_config:
-        if is_main_process():
-            print(f"🔧 使用命令行指定的DeepSpeed配置: {args.deepspeed_config}")
-        config['deepspeed'] = args.deepspeed_config
-    else:
-        if is_main_process():
-            print(f"🔧 使用YAML中的DeepSpeed配置: {config.get('deepspeed', 'NOT_FOUND')}")
+    # 验证并设置DeepSpeed配置
+    if is_main_process():
+        print(f"🔧 使用命令行指定的DeepSpeed配置: {args.deepspeed_config}")
+    
+    # 验证DeepSpeed配置文件是否存在
+    if not os.path.exists(args.deepspeed_config):
+        raise FileNotFoundError(f"DeepSpeed配置文件不存在: {args.deepspeed_config}")
+    
+    # 将DeepSpeed配置添加到config中
+    config['deepspeed'] = args.deepspeed_config
     
     config = prepare_config(config)
     

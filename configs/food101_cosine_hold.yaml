@@ -57,10 +57,7 @@ training:
     full_eval_at_end: true  # 训练结束后是否进行完整评估
     eval_best_model_only: true  # 是否只对最佳模型进行完整评估
 
-# DeepSpeed specific settings
-deepspeed:
-  config_file: "configs/ds_minimal.json"
-  zero_stage: 2
+# DeepSpeed配置通过命令行参数传入，不在此处设置
 
 # Weights & Biases configuration
 wandb:

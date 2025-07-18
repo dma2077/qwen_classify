@@ -104,15 +104,10 @@ class DeepSpeedTrainer:
         # 获取DeepSpeed配置
         deepspeed_config = self._get_deepspeed_config()
         
-        # 在初始化之前再次验证配置
-        if self.dist_ctx.is_main_process:
-            print(f"🔧 准备初始化DeepSpeed...")
-            print(f"  • 配置类型: {type(deepspeed_config)}")
-            print(f"  • 配置内容: {deepspeed_config}")
-            print(f"  • train_batch_size: {deepspeed_config.get('train_batch_size', 'NOT_FOUND')}")
-            print(f"  • train_micro_batch_size_per_gpu: {deepspeed_config.get('train_micro_batch_size_per_gpu', 'NOT_FOUND')}")
-        
         # 初始化DeepSpeed
+        if self.dist_ctx.is_main_process:
+            print(f"🔧 初始化DeepSpeed...")
+        
         self.model, self.optimizer, _, self.lr_scheduler = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
@@ -148,53 +143,35 @@ class DeepSpeedTrainer:
         
     def _get_deepspeed_config(self):
         """获取DeepSpeed配置"""
-        deepspeed_config = self.config.get('deepspeed', {})
+        deepspeed_config_path = self.config.get('deepspeed', '')
         
-        # 添加详细的调试信息
+        # 验证配置文件路径
+        if not deepspeed_config_path:
+            raise ValueError("DeepSpeed配置文件路径未设置")
+        
+        if not os.path.exists(deepspeed_config_path):
+            raise FileNotFoundError(f"DeepSpeed配置文件不存在: {deepspeed_config_path}")
+        
+        # 加载配置文件
+        try:
+            with open(deepspeed_config_path, 'r') as f:
+                deepspeed_config = json.load(f)
+        except Exception as e:
+            raise ValueError(f"DeepSpeed配置文件解析失败: {e}")
+        
+        # 验证必要字段
+        required_fields = ['train_batch_size', 'train_micro_batch_size_per_gpu']
+        missing_fields = [field for field in required_fields if field not in deepspeed_config]
+        if missing_fields:
+            raise ValueError(f"DeepSpeed配置文件缺少必要字段: {missing_fields}")
+        
+        # 打印配置信息（仅主进程）
         if self.dist_ctx.is_main_process:
-            print(f"🔍 DeepSpeed配置调试信息:")
-            print(f"  • 原始配置类型: {type(self.config.get('deepspeed'))}")
-            print(f"  • 原始配置内容: {self.config.get('deepspeed')}")
-            print(f"  • 当前工作目录: {os.getcwd()}")
-        
-        if isinstance(deepspeed_config, str):
-            # 检查文件是否存在
-            if self.dist_ctx.is_main_process:
-                print(f"  • 配置文件路径: {deepspeed_config}")
-                print(f"  • 文件是否存在: {os.path.exists(deepspeed_config)}")
-                if os.path.exists(deepspeed_config):
-                    print(f"  • 文件大小: {os.path.getsize(deepspeed_config)} bytes")
-            
-            if os.path.exists(deepspeed_config):
-                try:
-                    with open(deepspeed_config, 'r') as f:
-                        deepspeed_config = json.load(f)
-                    if self.dist_ctx.is_main_process:
-                        print(f"  ✅ 配置文件加载成功")
-                except Exception as e:
-                    if self.dist_ctx.is_main_process:
-                        print(f"  ❌ 配置文件加载失败: {e}")
-                    raise
-            else:
-                if self.dist_ctx.is_main_process:
-                    print(f"  ❌ 配置文件不存在: {deepspeed_config}")
-                raise FileNotFoundError(f"DeepSpeed配置文件不存在: {deepspeed_config}")
-        
-        # 验证配置内容
-        if self.dist_ctx.is_main_process:
-            print(f"  • 解析后配置类型: {type(deepspeed_config)}")
-            print(f"  • 解析后配置内容: {deepspeed_config}")
-            print(f"  • train_batch_size: {deepspeed_config.get('train_batch_size', 'NOT_FOUND')}")
-            print(f"  • train_micro_batch_size_per_gpu: {deepspeed_config.get('train_micro_batch_size_per_gpu', 'NOT_FOUND')}")
-            print(f"  • gradient_accumulation_steps: {deepspeed_config.get('gradient_accumulation_steps', 'NOT_FOUND')}")
-            
-            # 检查必要字段
-            required_fields = ['train_batch_size', 'train_micro_batch_size_per_gpu']
-            for field in required_fields:
-                if field in deepspeed_config:
-                    print(f"  ✅ {field}: {deepspeed_config[field]}")
-                else:
-                    print(f"  ❌ {field}: 缺失")
+            print(f"🔧 DeepSpeed配置加载成功:")
+            print(f"  • 配置文件: {deepspeed_config_path}")
+            print(f"  • train_batch_size: {deepspeed_config['train_batch_size']}")
+            print(f"  • train_micro_batch_size_per_gpu: {deepspeed_config['train_micro_batch_size_per_gpu']}")
+            print(f"  • gradient_accumulation_steps: {deepspeed_config.get('gradient_accumulation_steps', 1)}")
         
         return deepspeed_config
         
