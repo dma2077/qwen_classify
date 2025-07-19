@@ -378,12 +378,12 @@ class DeepSpeedTrainer:
             training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
                                                        grad_norm_value, inputs, attention_mask, step_time)
             
-            # 根据是否是eval步骤决定commit策略
+            # 🔥 修复：避免重复记录和step冲突
             if is_eval_step:
-                # eval步骤时，只记录training指标，不commit（等待与eval指标一起commit）
-                self.monitor.log_metrics(training_data, effective_step, commit=False)
+                # eval步骤时，不记录training指标，避免与eval指标冲突
+                pass
             else:
-                # 普通步骤时，直接commit training指标
+                # 普通步骤时，记录training指标
                 self.monitor.log_metrics(training_data, effective_step, commit=True)
             
     def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
@@ -417,7 +417,7 @@ class DeepSpeedTrainer:
             
             # 🔥 修复：确保eval指标正确记录到WandB
             if self.dist_ctx.is_main_process:
-                # 记录eval指标（training指标已经在_handle_effective_step中记录）
+                # 记录eval指标
                 self.monitor.log_metrics(eval_data, effective_step, commit=True)
                 
                 # 输出详细的记录信息

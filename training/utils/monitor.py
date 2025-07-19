@@ -1157,6 +1157,14 @@ class TrainingMonitor:
             return
 
         try:
+            # 🔥 修复：检查step是否合理，避免step倒退
+            if step is not None:
+                current_wandb_step = getattr(wandb.run, 'step', 0)
+                if step < current_wandb_step:
+                    print(f"⚠️  Step倒退检测: 当前WandB step={current_wandb_step}, 尝试记录step={step}")
+                    print(f"   跳过本次记录，避免step冲突")
+                    return
+            
             # 确保所有值都是可序列化的
             log_data = {}
             eval_metrics_count = 0
@@ -1167,6 +1175,10 @@ class TrainingMonitor:
             perf_metrics_list = []
             
             for key, value in metrics.items():
+                # 跳过step字段，避免重复
+                if key == "step":
+                    continue
+                    
                 # 处理不同类型的值
                 if isinstance(value, (int, float)):
                     log_data[key] = float(value)
@@ -1185,10 +1197,6 @@ class TrainingMonitor:
                 elif 'perf/' in key:
                     perf_metrics_count += 1
                     perf_metrics_list.append(key)
-            
-            # 🔥 关键修复：确保所有指标都有统一的step字段
-            if step is not None:
-                log_data["step"] = int(step)
             
             # 记录指标到WandB
             if step is not None:
