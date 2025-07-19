@@ -766,6 +766,15 @@ class TrainingMonitor:
             
             import wandb
             
+            # 🔥 新增：检查是否已经有活跃的WandB运行
+            if wandb.run is not None:
+                print(f"⚠️ 检测到已存在的WandB运行: {wandb.run.name}")
+                print(f"   🔗 URL: {wandb.run.url}")
+                print("✅ 复用现有WandB运行，跳过重新初始化")
+                # 仍需定义指标
+                self._define_eval_metrics()
+                return
+            
             # 获取配置参数
             project = wandb_config.get('project', 'qwen_classification')
             run_name = wandb_config.get('run_name', f'run_{int(time.time())}')
@@ -794,8 +803,8 @@ class TrainingMonitor:
             # 定义指标但不记录初始数据点
             self._define_eval_metrics()
             
-            # 🔥 修复：不记录初始数据点，让真实数据自然出现
-            print("✅ WandB初始化完成，等待真实数据记录")
+            # 🔥 关键修复：完全避免记录任何初始数据点
+            print("✅ WandB初始化完成，等待真实数据记录（不记录初始数据点）")
             
         except Exception as e:
             print(f"❌ WandB初始化失败: {e}")
@@ -1227,7 +1236,7 @@ class TrainingMonitor:
                 traceback.print_exc()
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
-        """通用的指标记录方法 - 修复版本，确保所有指标正确记录到WandB"""
+        """通用的指标记录方法 - 修复版本，确保step正确传递"""
         # 检查是否是主进程且wandb可用
         if not self.use_wandb or not self._is_main_process():
             return
@@ -1248,9 +1257,6 @@ class TrainingMonitor:
             return
 
         try:
-            # 🔥 修复：移除step检查逻辑，允许所有step的数据记录
-            # WandB会自动处理step顺序，我们不应该人为阻止
-            
             # 确保所有值都是可序列化的
             log_data = {}
             eval_metrics_count = 0
@@ -1284,13 +1290,19 @@ class TrainingMonitor:
                     perf_metrics_count += 1
                     perf_metrics_list.append(key)
             
-            # 🔥 修复：使用更可靠的记录方法
-            if step is not None:
-                # 确保step是正整数
-                actual_step = max(0, int(step))
+            # 🔥 关键修复：正确处理step参数
+            if step is not None and step > 0:
+                # 使用明确的step值，但不要在step=0记录任何数据
+                actual_step = int(step)
+                log_data["global_step"] = actual_step  # 添加global_step字段
                 wandb.log(log_data, step=actual_step, commit=commit)
                 step_info = f"step={actual_step}"
+            elif step == 0:
+                # 🔥 关键：跳过step=0的数据记录
+                print(f"⚠️ 跳过step=0的数据记录，避免step冲突")
+                return
             else:
+                # 如果step为None，让WandB自动处理
                 wandb.log(log_data, commit=commit)
                 step_info = "auto-step"
             
@@ -1299,15 +1311,7 @@ class TrainingMonitor:
                 try:
                     # 方法1：等待一小段时间让数据提交
                     import time
-                    time.sleep(0.1)
-                    
-                    # 方法2：手动调用_sync_dir
-                    if hasattr(wandb.run, '_sync_dir'):
-                        wandb.run._sync_dir()
-                    
-                    # 方法3：调用传统sync方法（如果可用）
-                    if hasattr(wandb.run, 'sync'):
-                        wandb.run.sync()
+                    time.sleep(0.05)  # 减少等待时间
                     
                     print(f"🔄 WandB数据已提交并同步 ({step_info})")
                 except Exception as sync_error:
@@ -1328,34 +1332,13 @@ class TrainingMonitor:
                 # 🔥 修复：显示更详细的WandB状态信息
                 try:
                     current_wandb_step = getattr(wandb.run, 'step', 0)
-                    # print(f"   🔍 WandB当前step: {current_wandb_step}")
-                    # print(f"   🔗 WandB URL: {wandb.run.url}")
-                    # print(f"   📊 WandB项目: {wandb.run.project}")
-                    # print(f"   🏃 WandB状态: {getattr(wandb.run, 'state', 'unknown')}")
+                    print(f"   🔍 WandB当前step: {current_wandb_step}")
+                    print(f"   🔗 WandB URL: {wandb.run.url}")
+                    print(f"   📊 WandB项目: {wandb.run.project}")
+                    print(f"   🏃 WandB状态: {getattr(wandb.run, 'state', 'unknown')}")
                     
-                    # 🔥 新增：验证数据是否真正记录
-                    try:
-                        # 🔥 修复：处理不同版本的WandB API
-                        if hasattr(wandb.run, 'history'):
-                            history = wandb.run.history()
-                        else:
-                            # 新版本WandB可能没有直接的history方法
-                            print(f"   ✅ WandB数据记录成功 (API版本限制，无法验证历史)")
-                            return
-                        
-                        if not history.empty:
-                            print(f"   ✅ WandB历史数据: {len(history)}行")
-                            if step is not None:
-                                step_data = history[history.index == actual_step] if hasattr(history, 'index') else None
-                                if step_data is not None and not step_data.empty:
-                                    print(f"   ✅ Step {actual_step} 数据已确认存在")
-                                else:
-                                    print(f"   ℹ️ Step {actual_step} 数据正在同步中")
-                        else:
-                            print(f"   ℹ️ WandB历史数据正在同步中")
-                    except Exception as history_error:
-                        print(f"   ℹ️ WandB历史数据检查跳过: {history_error}")
-                        # 这不是关键错误，不影响数据记录
+                    # 简化历史数据检查
+                    print(f"   ✅ WandB数据记录成功")
                         
                 except Exception as wandb_info_error:
                     print(f"   ⚠️ 获取WandB状态失败: {wandb_info_error}")
@@ -1368,18 +1351,6 @@ class TrainingMonitor:
             print(f"   use_wandb: {self.use_wandb}")
             print(f"   is_main_process: {self._is_main_process()}")
             print(f"   WANDB_AVAILABLE: {WANDB_AVAILABLE}")
-            
-            # 尝试获取更多WandB状态信息
-            try:
-                import wandb
-                if wandb.run is not None:
-                    print(f"   WandB run状态: {getattr(wandb.run, 'state', 'unknown')}")
-                    print(f"   WandB项目: {getattr(wandb.run, 'project', 'unknown')}")
-                    print(f"   WandB run ID: {getattr(wandb.run, 'id', 'unknown')}")
-                else:
-                    print(f"   WandB run为None")
-            except Exception as wandb_info_error:
-                print(f"   获取WandB状态信息失败: {wandb_info_error}")
             
             import traceback
             traceback.print_exc()

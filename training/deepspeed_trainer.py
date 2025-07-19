@@ -426,10 +426,15 @@ class DeepSpeedTrainer:
         if hasattr(self, 'pbar'):
             self.pbar.clear()
         
+        print(f"🔍 开始处理评估步骤 (step={effective_step})")
+        
         # 添加评估异常处理，避免NCCL超时导致训练中断
         try:
+            print(f"🔄 调用evaluate方法...")
             # 获取eval数据但不让evaluate方法记录到wandb
             eval_loss, eval_accuracy, eval_results = self.evaluate(step=effective_step, log_to_wandb=False, return_results=True)
+            
+            print(f"✅ Evaluate方法完成: eval_loss={eval_loss:.4f}, eval_accuracy={eval_accuracy:.4f}")
             
             # 构建完整的training数据（包括性能指标）
             current_training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
@@ -438,8 +443,12 @@ class DeepSpeedTrainer:
             # 准备eval数据
             eval_data = self._build_eval_metrics(eval_loss, eval_accuracy, eval_results)
             
+            print(f"📊 构建的eval数据: {list(eval_data.keys())}")
+            print(f"📊 Eval数据详情: {eval_data}")
+            
             # 🔥 修复：确保eval指标正确记录到WandB
             if self.dist_ctx.is_main_process:
+                print(f"🔧 开始记录eval指标到WandB...")
                 # 记录eval指标，强制commit确保数据同步
                 self.monitor.log_metrics(eval_data, effective_step, commit=True)
                 
@@ -457,6 +466,8 @@ class DeepSpeedTrainer:
                     print(f"   ✅ Eval指标记录成功")
                 else:
                     print(f"   ⚠️ 没有找到eval指标")
+            else:
+                print(f"⚠️ 非主进程，跳过eval指标记录")
                 
         except Exception as eval_error:
             if self.dist_ctx.is_main_process:
