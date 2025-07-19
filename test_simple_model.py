@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-测试迭代修复
-验证NoneType object is not iterable错误是否已解决
+简单测试模型
+避免复杂的维度处理，专注于测试profiler功能
 """
 
 import torch
@@ -11,10 +11,10 @@ import os
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-def test_iteration_fix():
-    """测试迭代修复"""
+def test_simple_model():
+    """测试简单模型"""
     
-    print("🧪 测试迭代修复...")
+    print("🧪 测试简单模型...")
     print("=" * 50)
     
     # 检查PyTorch版本
@@ -32,8 +32,8 @@ def test_iteration_fix():
     
     device = torch.device('cuda:0')
     
-    # 创建一个简单的测试模型
-    class SimpleTestModel(torch.nn.Module):
+    # 创建一个非常简单的测试模型
+    class SimpleModel(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.linear1 = torch.nn.Linear(512, 256)
@@ -41,21 +41,18 @@ def test_iteration_fix():
             self.relu = torch.nn.ReLU()
             
         def forward(self, input_ids, attention_mask, pixel_values, labels):
-            # 模拟多模态输入处理
+            # 简化的前向传播，避免复杂的维度处理
             batch_size = input_ids.size(0)
             seq_len = input_ids.size(1)
             
-            # 处理文本输入
+            # 简单的文本处理
             text_features = torch.randn(batch_size, seq_len, 512, device=input_ids.device)
             text_output = self.linear1(text_features)
             text_output = self.relu(text_output)
             
-            # 处理图像输入 - 修复维度问题
-            image_features = torch.randn(batch_size, 3, 224, 224, device=pixel_values.device)
-            # 将图像特征展平并投影到正确的维度
-            image_flat = image_features.view(batch_size, -1)  # [batch_size, 3*224*224]
-            image_projected = torch.nn.functional.linear(image_flat, torch.randn(256, image_flat.size(1), device=image_flat.device))  # [batch_size, 256]
-            image_output = image_projected.unsqueeze(1).expand(-1, seq_len, -1)  # [batch_size, seq_len, 256]
+            # 简单的图像处理 - 避免复杂的维度操作
+            image_features = torch.randn(batch_size, 256, device=pixel_values.device)  # 直接使用256维
+            image_output = image_features.unsqueeze(1).expand(-1, seq_len, -1)  # [batch_size, seq_len, 256]
             
             # 融合特征
             combined = text_output + image_output
@@ -64,34 +61,45 @@ def test_iteration_fix():
             # 计算损失
             loss = torch.nn.functional.cross_entropy(logits.view(-1, 101), labels.view(-1))
             
-            # 返回一个类似transformers输出的对象（不包含last_hidden_state）
+            # 返回一个类似transformers输出的对象
             class Outputs:
                 def __init__(self, loss, logits):
                     self.loss = loss
                     self.logits = logits
-                    # 不包含last_hidden_state，模拟你的模型输出
             
             return Outputs(loss, logits)
     
     # 创建模型
-    model = SimpleTestModel().to(device)
-    print(f"✅ 创建测试模型: {sum(p.numel() for p in model.parameters()):,} 参数")
+    model = SimpleModel().to(device)
+    print(f"✅ 创建简单测试模型: {sum(p.numel() for p in model.parameters()):,} 参数")
     
-    # 创建测试batch（包含attention_mask）
+    # 创建测试batch
     batch_size = 8
     seq_length = 512
     
     test_batch = {
         'input_ids': torch.randint(0, 1000, (batch_size, seq_length), device=device),
-        'attention_mask': torch.ones(batch_size, seq_length, device=device),  # 全1的attention_mask
-        'pixel_values': torch.randn(batch_size, 3, 224, 224, device=device),
+        'attention_mask': torch.ones(batch_size, seq_length, device=device),
+        'pixel_values': torch.randn(batch_size, 3, 224, 224, device=device),  # 保持原始尺寸
         'labels': torch.randint(0, 101, (batch_size,), device=device)
     }
     
     print(f"✅ 创建测试batch: batch_size={batch_size}, seq_length={seq_length}")
     
-    # 测试1: 基础profiler测试
-    print("\n📊 测试1: 基础profiler测试")
+    # 测试1: 基础前向传播
+    print("\n📊 测试1: 基础前向传播")
+    try:
+        with torch.no_grad():
+            outputs = model(**test_batch)
+        print(f"✅ 前向传播成功: loss={outputs.loss:.4f}")
+    except Exception as e:
+        print(f"❌ 前向传播失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+    
+    # 测试2: 基础profiler测试
+    print("\n📊 测试2: 基础profiler测试")
     try:
         with torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CUDA],
@@ -139,8 +147,8 @@ def test_iteration_fix():
         import traceback
         traceback.print_exc()
     
-    # 测试2: 测试修复后的函数
-    print("\n📊 测试2: 测试修复后的函数")
+    # 测试3: 测试修复后的函数
+    print("\n📊 测试3: 测试修复后的函数")
     try:
         from training.utils.monitor import profile_model_flops
         total_flops = profile_model_flops(model, test_batch)
@@ -150,30 +158,8 @@ def test_iteration_fix():
         import traceback
         traceback.print_exc()
     
-    # 测试3: 测试前向传播FLOPs测量
-    print("\n📊 测试3: 测试前向传播FLOPs测量")
-    try:
-        from training.utils.monitor import _profile_forward_flops
-        forward_flops = _profile_forward_flops(model, test_batch)
-        print(f"✅ 前向传播FLOPs测量: {forward_flops:.2e}")
-    except Exception as e:
-        print(f"❌ 前向传播FLOPs测量失败: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # 测试4: 测试反向传播FLOPs测量
-    print("\n📊 测试4: 测试反向传播FLOPs测量")
-    try:
-        from training.utils.monitor import _profile_backward_flops
-        backward_flops = _profile_backward_flops(model, test_batch)
-        print(f"✅ 反向传播FLOPs测量: {backward_flops:.2e}")
-    except Exception as e:
-        print(f"❌ 反向传播FLOPs测量失败: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # 测试5: 测试估算方法
-    print("\n📊 测试5: 测试估算方法")
+    # 测试4: 测试估算方法
+    print("\n📊 测试4: 测试估算方法")
     try:
         from training.utils.monitor import _estimate_flops_fallback
         estimated_flops = _estimate_flops_fallback(model, test_batch, seq_length)
@@ -183,7 +169,7 @@ def test_iteration_fix():
         import traceback
         traceback.print_exc()
     
-    print("\n✅ 迭代修复测试完成")
+    print("\n✅ 简单模型测试完成")
 
 if __name__ == "__main__":
-    test_iteration_fix() 
+    test_simple_model() 

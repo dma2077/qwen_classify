@@ -50,10 +50,12 @@ def test_profiler_safe():
             text_output = self.linear1(text_features)
             text_output = self.relu(text_output)
             
-            # 处理图像输入
+            # 处理图像输入 - 修复维度问题
             image_features = torch.randn(batch_size, 3, 224, 224, device=pixel_values.device)
-            image_output = torch.mean(image_features.view(batch_size, -1), dim=1, keepdim=True)
-            image_output = image_output.expand(-1, seq_len, -1)
+            # 将图像特征展平并投影到正确的维度
+            image_flat = image_features.view(batch_size, -1)  # [batch_size, 3*224*224]
+            image_projected = torch.nn.functional.linear(image_flat, torch.randn(256, image_flat.size(1), device=image_flat.device))  # [batch_size, 256]
+            image_output = image_projected.unsqueeze(1).expand(-1, seq_len, -1)  # [batch_size, seq_len, 256]
             
             # 融合特征
             combined = text_output + image_output
