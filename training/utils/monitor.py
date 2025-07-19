@@ -1255,9 +1255,9 @@ class TrainingMonitor:
             #         pass  # 静默处理提交错误
             
             # 输出记录信息（调试用）
-            if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):
-                print(f"📊 WandB记录成功 ({step_info}): "
-                      f"training={training_metrics_count}, eval={eval_metrics_count}, perf={perf_metrics_count}")
+            # if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):
+            #     print(f"📊 WandB记录成功 ({step_info}): "
+            #           f"training={training_metrics_count}, eval={eval_metrics_count}, perf={perf_metrics_count}")
             
         except Exception as e:
             print(f"❌ 记录指标到WandB失败: {e}")
