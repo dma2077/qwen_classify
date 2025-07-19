@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-简单测试模型
-避免复杂的维度处理，专注于测试profiler功能
+超简单测试
+避免复杂的损失计算，专注于测试profiler功能
 """
 
 import torch
@@ -11,10 +11,10 @@ import os
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-def test_simple_model():
-    """测试简单模型"""
+def test_ultra_simple():
+    """超简单测试"""
     
-    print("🧪 测试简单模型...")
+    print("🧪 超简单测试...")
     print("=" * 50)
     
     # 检查PyTorch版本
@@ -32,8 +32,8 @@ def test_simple_model():
     
     device = torch.device('cuda:0')
     
-    # 创建一个非常简单的测试模型
-    class SimpleModel(torch.nn.Module):
+    # 创建一个超简单的测试模型
+    class UltraSimpleModel(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.linear1 = torch.nn.Linear(512, 256)
@@ -41,7 +41,7 @@ def test_simple_model():
             self.relu = torch.nn.ReLU()
             
         def forward(self, input_ids, attention_mask, pixel_values, labels):
-            # 简化的前向传播，避免复杂的维度处理
+            # 超简化的前向传播
             batch_size = input_ids.size(0)
             seq_len = input_ids.size(1)
             
@@ -50,20 +50,17 @@ def test_simple_model():
             text_output = self.linear1(text_features)
             text_output = self.relu(text_output)
             
-            # 简单的图像处理 - 避免复杂的维度操作
-            image_features = torch.randn(batch_size, 256, device=pixel_values.device)  # 直接使用256维
-            image_output = image_features.unsqueeze(1).expand(-1, seq_len, -1)  # [batch_size, seq_len, 256]
+            # 简单的图像处理
+            image_features = torch.randn(batch_size, 256, device=pixel_values.device)
+            image_output = image_features.unsqueeze(1).expand(-1, seq_len, -1)
             
             # 融合特征
             combined = text_output + image_output
             logits = self.linear2(combined)
             
-            # 计算损失 - 修复batch size不匹配问题
-            # logits形状: [batch_size, seq_len, 101] -> [batch_size * seq_len, 101]
-            # labels形状: [batch_size] -> [batch_size * seq_len]
-            logits_flat = logits.view(-1, 101)  # [batch_size * seq_len, 101]
-            labels_flat = labels.unsqueeze(1).expand(-1, seq_len).contiguous().view(-1)  # [batch_size * seq_len]
-            loss = torch.nn.functional.cross_entropy(logits_flat, labels_flat)
+            # 简化的损失计算 - 只对第一个token计算损失
+            first_token_logits = logits[:, 0, :]  # [batch_size, 101]
+            loss = torch.nn.functional.cross_entropy(first_token_logits, labels)
             
             # 返回一个类似transformers输出的对象
             class Outputs:
@@ -74,8 +71,8 @@ def test_simple_model():
             return Outputs(loss, logits)
     
     # 创建模型
-    model = SimpleModel().to(device)
-    print(f"✅ 创建简单测试模型: {sum(p.numel() for p in model.parameters()):,} 参数")
+    model = UltraSimpleModel().to(device)
+    print(f"✅ 创建超简单测试模型: {sum(p.numel() for p in model.parameters()):,} 参数")
     
     # 创建测试batch
     batch_size = 8
@@ -84,7 +81,7 @@ def test_simple_model():
     test_batch = {
         'input_ids': torch.randint(0, 1000, (batch_size, seq_length), device=device),
         'attention_mask': torch.ones(batch_size, seq_length, device=device),
-        'pixel_values': torch.randn(batch_size, 3, 224, 224, device=device),  # 保持原始尺寸
+        'pixel_values': torch.randn(batch_size, 3, 224, 224, device=device),
         'labels': torch.randint(0, 101, (batch_size,), device=device)
     }
     
@@ -96,6 +93,7 @@ def test_simple_model():
         with torch.no_grad():
             outputs = model(**test_batch)
         print(f"✅ 前向传播成功: loss={outputs.loss:.4f}")
+        print(f"  logits形状: {outputs.logits.shape}")
     except Exception as e:
         print(f"❌ 前向传播失败: {e}")
         import traceback
@@ -173,7 +171,7 @@ def test_simple_model():
         import traceback
         traceback.print_exc()
     
-    print("\n✅ 简单模型测试完成")
+    print("\n✅ 超简单测试完成")
 
 if __name__ == "__main__":
-    test_simple_model() 
+    test_ultra_simple() 

@@ -61,8 +61,12 @@ def test_profiler_safe():
             combined = text_output + image_output
             logits = self.linear2(combined)
             
-            # 计算损失
-            loss = torch.nn.functional.cross_entropy(logits.view(-1, 101), labels.view(-1))
+            # 计算损失 - 修复batch size不匹配问题
+            # logits形状: [batch_size, seq_len, 101] -> [batch_size * seq_len, 101]
+            # labels形状: [batch_size] -> [batch_size * seq_len]
+            logits_flat = logits.view(-1, 101)  # [batch_size * seq_len, 101]
+            labels_flat = labels.unsqueeze(1).expand(-1, seq_len).contiguous().view(-1)  # [batch_size * seq_len]
+            loss = torch.nn.functional.cross_entropy(logits_flat, labels_flat)
             
             # 返回一个类似transformers输出的对象（不包含last_hidden_state）
             class Outputs:
