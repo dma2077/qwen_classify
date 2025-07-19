@@ -1236,7 +1236,7 @@ class TrainingMonitor:
                 traceback.print_exc()
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
-        """通用的指标记录方法 - 修复版本，确保step正确传递"""
+        """通用的指标记录方法 - 彻底修复WandB step冲突问题"""
         # 检查是否是主进程且wandb可用
         if not self.use_wandb or not self._is_main_process():
             return
@@ -1290,13 +1290,27 @@ class TrainingMonitor:
                     perf_metrics_count += 1
                     perf_metrics_list.append(key)
             
-            # 🔥 关键修复：正确处理step参数
+            # 🔥 彻底修复：完全控制WandB step，避免自动递增
             if step is not None and step > 0:
-                # 使用明确的step值，但不要在step=0记录任何数据
                 actual_step = int(step)
-                log_data["global_step"] = actual_step  # 添加global_step字段
-                wandb.log(log_data, step=actual_step, commit=commit)
+                
+                # 🔥 关键修复：重置WandB内部step计数器到我们想要的值
+                if hasattr(wandb.run, '_step'):
+                    # 强制设置WandB内部step为我们想要的值-1，因为wandb.log会自动+1
+                    wandb.run._step = actual_step - 1
+                    print(f"🔧 强制设置WandB内部step为: {actual_step - 1}")
+                
+                # 记录数据，不使用step参数，让WandB使用内部step
+                wandb.log(log_data, commit=commit)
                 step_info = f"step={actual_step}"
+                
+                # 验证step是否正确
+                current_wandb_step = getattr(wandb.run, 'step', 0)
+                if current_wandb_step == actual_step:
+                    print(f"✅ Step同步成功: {actual_step}")
+                else:
+                    print(f"⚠️ Step不同步: 期望{actual_step}, WandB={current_wandb_step}")
+                    
             elif step == 0:
                 # 🔥 关键：跳过step=0的数据记录
                 print(f"⚠️ 跳过step=0的数据记录，避免step冲突")
@@ -1309,14 +1323,13 @@ class TrainingMonitor:
             # 🔥 修复：改进同步策略
             if commit and wandb.run is not None:
                 try:
-                    # 方法1：等待一小段时间让数据提交
+                    # 等待数据同步
                     import time
-                    time.sleep(0.05)  # 减少等待时间
+                    time.sleep(0.05)
                     
                     print(f"🔄 WandB数据已提交并同步 ({step_info})")
                 except Exception as sync_error:
                     print(f"⚠️ WandB同步操作失败: {sync_error}")
-                    # 同步失败不应该影响主流程
             
             # 输出记录信息（调试用）
             if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):
@@ -1335,9 +1348,28 @@ class TrainingMonitor:
                     print(f"   🔍 WandB当前step: {current_wandb_step}")
                     print(f"   🔗 WandB URL: {wandb.run.url}")
                     print(f"   📊 WandB项目: {wandb.run.project}")
-                    print(f"   🏃 WandB状态: {getattr(wandb.run, 'state', 'unknown')}")
                     
-                    # 简化历史数据检查
+                    # 检查WandB run状态
+                    if hasattr(wandb.run, 'state'):
+                        print(f"   🏃 WandB状态: {wandb.run.state}")
+                    
+                    # 🔥 新增：检查WandB数据是否真的被记录
+                    try:
+                        # 检查最近的数据
+                        if hasattr(wandb.run, 'summary') and wandb.run.summary:
+                            summary_keys = list(wandb.run.summary.keys())
+                            print(f"   📋 WandB summary有数据: {len(summary_keys)}个指标")
+                            if training_metrics_list:
+                                found_training = [k for k in training_metrics_list if k in summary_keys]
+                                if found_training:
+                                    print(f"   ✅ Training指标已确认存在: {found_training}")
+                                else:
+                                    print(f"   ❌ Training指标未找到在summary中")
+                        else:
+                            print(f"   ⚠️ WandB summary为空或不可用")
+                    except Exception as summary_error:
+                        print(f"   ⚠️ 检查WandB summary失败: {summary_error}")
+                    
                     print(f"   ✅ WandB数据记录成功")
                         
                 except Exception as wandb_info_error:

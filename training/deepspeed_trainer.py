@@ -332,42 +332,57 @@ class DeepSpeedTrainer:
             "step": int(effective_step)
         }
         
-        # 检查是否需要添加性能指标
-        should_log_perf = (effective_step % self.monitor.freq['perf_log_freq'] == 0)
-        if should_log_perf and step_time > 0:
-            training_data.update({
-                "perf/step_time": float(step_time),
-                "perf/steps_per_second": float(1.0 / step_time),
-            })
+        # 🔥 修复：降低性能指标记录频率，确保能看到perf指标
+        should_log_perf = (effective_step % 20 == 0)  # 每20步记录一次性能指标
+        
+        if should_log_perf:
+            print(f"🔧 检查性能指标记录条件 (step={effective_step}):")
+            print(f"   should_log_perf: {should_log_perf}")
+            print(f"   step_time: {step_time}")
+            print(f"   step_time > 0: {step_time > 0}")
             
-            # 添加MFU相关指标
-            current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, step_time)
-            if current_mfu is not None:
-                current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
-                actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-                
+            if step_time > 0:
                 training_data.update({
-                    "perf/mfu": float(current_mfu),
-                    "perf/mfu_percent": float(current_mfu * 100),
-                    "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
-                    "perf/samples_per_second": float(actual_batch_size / step_time),
-                    "perf/actual_flops": float(self.monitor.actual_flops),
-                    "perf/actual_seq_length": float(current_seq_length),
-                    "perf/flops_per_second": float(self.monitor.actual_flops / step_time),
+                    "perf/step_time": float(step_time),
+                    "perf/steps_per_second": float(1.0 / step_time),
                 })
                 
-                # 输出MFU记录信息
-                if self.dist_ctx.is_main_process:
-                    print(f"📊 MFU记录 (step={effective_step}): {current_mfu:.3f} ({current_mfu*100:.1f}%)")
+                print(f"   ✅ 基础性能指标已添加: step_time={step_time:.3f}s")
+                
+                # 添加MFU相关指标
+                current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, step_time)
+                if current_mfu is not None:
+                    current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
+                    actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
+                    
+                    training_data.update({
+                        "perf/mfu": float(current_mfu),
+                        "perf/mfu_percent": float(current_mfu * 100),
+                        "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
+                        "perf/samples_per_second": float(actual_batch_size / step_time),
+                        "perf/actual_flops": float(self.monitor.actual_flops),
+                        "perf/actual_seq_length": float(current_seq_length),
+                        "perf/flops_per_second": float(self.monitor.actual_flops / step_time),
+                    })
+                    
+                    print(f"   ✅ MFU指标已添加: {current_mfu:.3f} ({current_mfu*100:.1f}%)")
+                    
+                    # 输出MFU记录信息
+                    if self.dist_ctx.is_main_process:
+                        print(f"📊 MFU记录 (step={effective_step}): {current_mfu:.3f} ({current_mfu*100:.1f}%)")
+                else:
+                    # 如果MFU计算失败，记录原因
+                    if self.dist_ctx.is_main_process:
+                        print(f"⚠️ MFU计算失败 (step={effective_step}): model_ref={self.monitor.model_ref is not None}, "
+                              f"attention_mask={attention_mask is not None}, actual_flops={self.monitor.actual_flops is not None}")
             else:
-                # 如果MFU计算失败，记录原因
+                # 如果步骤时间为0或负数，记录警告
                 if self.dist_ctx.is_main_process:
-                    print(f"⚠️ MFU计算失败 (step={effective_step}): model_ref={self.monitor.model_ref is not None}, "
-                          f"attention_mask={attention_mask is not None}, actual_flops={self.monitor.actual_flops is not None}")
-        elif should_log_perf and step_time <= 0:
-            # 如果步骤时间为0，记录警告
-            if self.dist_ctx.is_main_process:
-                print(f"⚠️ 步骤时间为0，跳过性能指标记录 (step={effective_step})")
+                    print(f"⚠️ 步骤时间异常，跳过性能指标记录 (step={effective_step}, step_time={step_time})")
+        else:
+            # 调试信息：为什么跳过性能指标
+            if effective_step % 100 == 0:  # 每100步输出一次
+                print(f"⏭️  跳过性能指标记录 (step={effective_step}): 频率检查 {effective_step} % 20 != 0")
                 
         return training_data
         
