@@ -217,7 +217,7 @@ def _measure_flops_with_profiler(model, batch_size: int, seq_length: int) -> flo
     except Exception as e:
         print(f"FLOPs测量完全失败: {e}")
         return 0.0
-
+ 
 def _create_dummy_batch_for_profiling(batch_size: int, seq_length: int, device: torch.device) -> Dict:
     """创建用于profiling的虚拟batch"""
     try:
@@ -319,28 +319,47 @@ def _profile_forward_flops(model, batch_example: Dict) -> float:
             flops = 0
             try:
                 events = prof.events()
-                if events is not None and len(events) > 0:
-                    # 🔥 修复：安全地迭代events，避免TypeError
+                print(f"🔍 前向传播Profiler - events类型: {type(events)}")
+                
+                if events is not None:
                     try:
-                        events_list = list(events)  # 确保events是可迭代的
-                        for event in events_list:
-                            if hasattr(event, 'flops') and event.flops > 0:
-                                flops += event.flops
-                    except (TypeError, AttributeError) as iter_error:
-                        print(f"⚠️  迭代前向传播events失败: {iter_error}")
+                        events_length = len(events)
+                        print(f"🔍 前向传播Profiler - events长度: {events_length}")
+                        
+                        if events_length > 0:
+                            # 🔥 修复：安全地迭代events，避免TypeError
+                            try:
+                                events_list = list(events)  # 确保events是可迭代的
+                                print(f"🔍 前向传播Profiler - 成功转换为list，长度: {len(events_list)}")
+                                
+                                for i, event in enumerate(events_list):
+                                    if hasattr(event, 'flops') and event.flops > 0:
+                                        flops += event.flops
+                                        if i < 5:  # 只打印前5个有FLOPs的事件
+                                            print(f"  Event {i}: flops={event.flops}")
+                                
+                                if flops > 0:
+                                    print(f"✅ 前向传播FLOPs: {flops:.2e}")
+                                    return float(flops)
+                                else:
+                                    print("⚠️  前向传播Profiler未检测到FLOPs")
+                            except (TypeError, AttributeError) as iter_error:
+                                print(f"⚠️  迭代前向传播events失败: {iter_error}")
+                                print(f"  events类型: {type(events)}")
+                                print(f"  events内容: {events}")
+                                return 0.0
+                        else:
+                            print("⚠️  前向传播Profiler events为空")
+                    except Exception as len_error:
+                        print(f"⚠️  获取events长度失败: {len_error}")
+                        print(f"  events类型: {type(events)}")
                         return 0.0
-                    
-                    if flops > 0:
-                        print(f"✅ 前向传播FLOPs: {flops:.2e}")
-                        return float(flops)
-                    else:
-                        print("⚠️  前向传播Profiler未检测到FLOPs")
                 else:
-                    print("⚠️  前向传播Profiler events为空")
+                    print("⚠️  前向传播Profiler events为None")
             except Exception as events_error:
                 print(f"⚠️  获取前向传播profiler events失败: {events_error}")
-            
-            return 0.0
+                import traceback
+                traceback.print_exc()
             
             return 0.0
             
@@ -382,28 +401,47 @@ def _profile_backward_flops(model, batch_example: Dict) -> float:
             flops = 0
             try:
                 events = prof.events()
-                if events is not None and len(events) > 0:
-                    # 🔥 修复：安全地迭代events，避免TypeError
+                print(f"🔍 反向传播Profiler - events类型: {type(events)}")
+                
+                if events is not None:
                     try:
-                        events_list = list(events)  # 确保events是可迭代的
-                        for event in events_list:
-                            if hasattr(event, 'flops') and event.flops > 0:
-                                flops += event.flops
-                    except (TypeError, AttributeError) as iter_error:
-                        print(f"⚠️  迭代反向传播events失败: {iter_error}")
+                        events_length = len(events)
+                        print(f"🔍 反向传播Profiler - events长度: {events_length}")
+                        
+                        if events_length > 0:
+                            # 🔥 修复：安全地迭代events，避免TypeError
+                            try:
+                                events_list = list(events)  # 确保events是可迭代的
+                                print(f"🔍 反向传播Profiler - 成功转换为list，长度: {len(events_list)}")
+                                
+                                for i, event in enumerate(events_list):
+                                    if hasattr(event, 'flops') and event.flops > 0:
+                                        flops += event.flops
+                                        if i < 5:  # 只打印前5个有FLOPs的事件
+                                            print(f"  Event {i}: flops={event.flops}")
+                                
+                                if flops > 0:
+                                    print(f"✅ 反向传播FLOPs: {flops:.2e}")
+                                    return float(flops)
+                                else:
+                                    print("⚠️  反向传播Profiler未检测到FLOPs")
+                            except (TypeError, AttributeError) as iter_error:
+                                print(f"⚠️  迭代反向传播events失败: {iter_error}")
+                                print(f"  events类型: {type(events)}")
+                                print(f"  events内容: {events}")
+                                return 0.0
+                        else:
+                            print("⚠️  反向传播Profiler events为空")
+                    except Exception as len_error:
+                        print(f"⚠️  获取events长度失败: {len_error}")
+                        print(f"  events类型: {type(events)}")
                         return 0.0
-                    
-                    if flops > 0:
-                        print(f"✅ 反向传播FLOPs: {flops:.2e}")
-                        return float(flops)
-                    else:
-                        print("⚠️  反向传播Profiler未检测到FLOPs")
                 else:
-                    print("⚠️  反向传播Profiler events为空")
+                    print("⚠️  反向传播Profiler events为None")
             except Exception as events_error:
                 print(f"⚠️  获取反向传播profiler events失败: {events_error}")
-            
-            return 0.0
+                import traceback
+                traceback.print_exc()
             
             return 0.0
             
@@ -1157,19 +1195,14 @@ class TrainingMonitor:
             return
 
         try:
-            # 🔥 修复：检查step是否合理，避免step倒退，但对eval指标更宽松
+            # 🔥 修复：简化step检查，只在明显倒退时阻止
             if step is not None:
                 current_wandb_step = getattr(wandb.run, 'step', 0)
-                if step < current_wandb_step:
-                    # 检查是否包含eval指标，如果是则允许记录（eval可能使用相同的step）
-                    has_eval_metrics = any('eval/' in key for key in metrics.keys())
-                    if has_eval_metrics:
-                        print(f"⚠️  Step倒退检测: 当前WandB step={current_wandb_step}, 尝试记录eval指标到step={step}")
-                        print(f"   允许eval指标记录，因为eval可能使用相同的step")
-                    else:
-                        print(f"⚠️  Step倒退检测: 当前WandB step={current_wandb_step}, 尝试记录step={step}")
-                        print(f"   跳过本次记录，避免step冲突")
-                        return
+                # 只在step明显倒退时阻止（相差超过10步）
+                if step < current_wandb_step - 10:
+                    print(f"⚠️  Step明显倒退: 当前WandB step={current_wandb_step}, 尝试记录step={step}")
+                    print(f"   跳过本次记录，避免step冲突")
+                    return
             
             # 确保所有值都是可序列化的
             log_data = {}
@@ -1212,12 +1245,18 @@ class TrainingMonitor:
                 wandb.log(log_data, commit=commit)
                 step_info = "auto-step"
             
-            # 只在包含eval指标时进行强制提交（静默模式）
-            if eval_metrics_count > 0 and commit and wandb.run is not None:
+            # 🔥 修复：确保数据同步，特别是eval指标
+            if commit and wandb.run is not None:
                 try:
+                    # 强制同步数据
                     wandb.log({}, commit=True)
                 except Exception:
                     pass  # 静默处理提交错误
+            
+            # 输出记录信息（调试用）
+            if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):
+                print(f"📊 WandB记录成功 ({step_info}): "
+                      f"training={training_metrics_count}, eval={eval_metrics_count}, perf={perf_metrics_count}")
             
         except Exception as e:
             print(f"❌ 记录指标到WandB失败: {e}")

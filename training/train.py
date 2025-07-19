@@ -185,6 +185,13 @@ def main():
     set_random_seeds(42)
     
     # 初始化分布式环境 (DeepSpeed会处理这个)
+    # 🔥 修复：设置端口配置，避免端口冲突
+    import os
+    if 'MASTER_PORT' not in os.environ:
+        os.environ['MASTER_PORT'] = '29501'  # 使用29501端口，避免29500冲突
+    if 'MASTER_ADDR' not in os.environ:
+        os.environ['MASTER_ADDR'] = 'localhost'
+    
     deepspeed.init_distributed()
     
     # 加载配置

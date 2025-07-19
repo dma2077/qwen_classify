@@ -16,6 +16,14 @@ class DeepSpeedTrainer:
     def __init__(self, config):
         # 假设配置已经通过prepare_config处理过
         self.config = config
+        
+        # 🔥 修复：设置端口配置，避免端口冲突
+        import os
+        if 'MASTER_PORT' not in os.environ:
+            os.environ['MASTER_PORT'] = '29501'  # 使用29501端口，避免29500冲突
+        if 'MASTER_ADDR' not in os.environ:
+            os.environ['MASTER_ADDR'] = 'localhost'
+        
         self.dist_ctx = DistributedContext()
         
         # 设置NCCL超时保护（在分布式训练时）
@@ -378,13 +386,8 @@ class DeepSpeedTrainer:
             training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
                                                        grad_norm_value, inputs, attention_mask, step_time)
             
-            # 🔥 修复：eval步骤时也记录training指标，但使用不同的commit策略
-            if is_eval_step:
-                # eval步骤时，记录training指标但不commit，等待与eval指标一起commit
-                self.monitor.log_metrics(training_data, effective_step, commit=False)
-            else:
-                # 普通步骤时，记录training指标并立即commit
-                self.monitor.log_metrics(training_data, effective_step, commit=True)
+            # 🔥 修复：简化记录逻辑，每个step都记录并commit
+            self.monitor.log_metrics(training_data, effective_step, commit=True)
             
     def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
         """更新进度条"""
@@ -419,14 +422,6 @@ class DeepSpeedTrainer:
             if self.dist_ctx.is_main_process:
                 # 记录eval指标，强制commit确保数据同步
                 self.monitor.log_metrics(eval_data, effective_step, commit=True)
-                
-                # 如果eval指标记录成功，强制同步一次
-                try:
-                    import wandb
-                    if wandb.run is not None:
-                        wandb.log({}, commit=True)
-                except Exception:
-                    pass
                 
                 # 输出详细的记录信息
                 eval_metrics_list = [k for k in eval_data.keys() if k.startswith('eval/')]
