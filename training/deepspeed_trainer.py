@@ -383,12 +383,32 @@ class DeepSpeedTrainer:
         
         # 🔥 修复：确保所有步骤都记录training和perf指标到WandB
         if self.dist_ctx.is_main_process:
-            training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
-                                                       grad_norm_value, inputs, attention_mask, step_time)
+            # 检查是否需要记录training指标
+            should_log_training = (effective_step % self.monitor.freq['training_log_freq'] == 0)
             
-            # 🔥 修复：简化记录逻辑，每个step都记录并commit
-            self.monitor.log_metrics(training_data, effective_step, commit=True)
-            
+            if should_log_training:
+                training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
+                                                           grad_norm_value, inputs, attention_mask, step_time)
+                
+                # 🔥 修复：简化记录逻辑，每个step都记录并commit
+                self.monitor.log_metrics(training_data, effective_step, commit=True)
+                
+                # 添加调试输出
+                training_metrics_list = [k for k in training_data.keys() if k.startswith('training/')]
+                perf_metrics_list = [k for k in training_data.keys() if k.startswith('perf/')]
+                if training_metrics_list or perf_metrics_list:
+                    print(f"📊 Training指标已记录 (step={effective_step}): "
+                          f"training={len(training_metrics_list)}, perf={len(perf_metrics_list)}")
+                    if training_metrics_list:
+                        print(f"   📈 Training指标: {training_metrics_list}")
+                    if perf_metrics_list:
+                        print(f"   ⚡ Perf指标: {perf_metrics_list}")
+            else:
+                # 调试输出：显示为什么跳过记录
+                if effective_step % 100 == 0:  # 每100步输出一次，避免日志过多
+                    print(f"⏭️  跳过training指标记录 (step={effective_step}): "
+                          f"频率={self.monitor.freq['training_log_freq']}")
+                
     def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
         """更新进度条"""
         if hasattr(self, 'pbar'):

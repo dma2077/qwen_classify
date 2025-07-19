@@ -649,10 +649,16 @@ class TrainingMonitor:
         print(f"📊 TrainingMonitor初始化: batch_size={self.batch_size}, flops_profile_freq={self.flops_profile_freq}")
     
     def _init_monitor_frequencies(self):
-        """初始化监控频率配置 - 所有频率独立设置"""
+        """初始化监控频率配置 - 支持多种配置结构"""
         # 从config中获取monitor频率配置
         monitor_config = self.config.get('monitor', {})
+        
+        # 🔥 修复：支持多种配置结构
+        # 1. 优先使用 'freq' 配置
         freq_config = monitor_config.get('freq', {})
+        if not freq_config:
+            # 2. 如果没有 'freq'，尝试使用 'all_freq'
+            freq_config = monitor_config.get('all_freq', {})
         
         # 🔥 所有频率都从monitor.freq中独立设置
         self.freq = {
@@ -679,6 +685,7 @@ class TrainingMonitor:
         # 只在主进程输出关键监控配置
         if self._is_main_process():
             print(f"📊 监控频率: 训练{self.freq['training_log_freq']}步, 性能{self.freq['perf_log_freq']}步, 评估{self.freq['eval_log_freq']}步")
+            print(f"   📂 配置来源: {'freq' if monitor_config.get('freq') else 'all_freq' if monitor_config.get('all_freq') else '默认值'}")
     
     def _get_effective_batch_size(self, config: Dict) -> int:
         """正确获取有效的batch size"""
@@ -1255,9 +1262,15 @@ class TrainingMonitor:
             #         pass  # 静默处理提交错误
             
             # 输出记录信息（调试用）
-            # if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):
-            #     print(f"📊 WandB记录成功 ({step_info}): "
-            #           f"training={training_metrics_count}, eval={eval_metrics_count}, perf={perf_metrics_count}")
+            if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):
+                print(f"📊 WandB记录成功 ({step_info}): "
+                      f"training={training_metrics_count}, eval={eval_metrics_count}, perf={perf_metrics_count}")
+                if training_metrics_count > 0:
+                    print(f"   📈 Training指标: {training_metrics_list}")
+                if eval_metrics_count > 0:
+                    print(f"   📊 Eval指标: {eval_metrics_list}")
+                if perf_metrics_count > 0:
+                    print(f"   ⚡ Perf指标: {perf_metrics_list}")
             
         except Exception as e:
             print(f"❌ 记录指标到WandB失败: {e}")
