@@ -657,6 +657,8 @@ class DeepSpeedTrainer:
                 
                 # 定期评估
                 if effective_step > 0 and effective_step % self.config['eval_steps'] == 0:
+                    if self.dist_ctx.is_main_process:
+                        print(f"\n🎯 触发评估步骤 (step={effective_step}, eval_steps={self.config['eval_steps']})")
                     self._handle_evaluation_step(effective_step, epoch, aggregated_loss, current_lr, 
                                                grad_norm_value, inputs, attention_mask, step_time)
                 

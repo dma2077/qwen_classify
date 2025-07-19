@@ -745,101 +745,52 @@ class TrainingMonitor:
             return True
     
     def _init_wandb(self):
-        """初始化wandb（仅在主进程中）"""
-        if not WANDB_AVAILABLE:
-            return
-        
-        wandb_config = self.config.get('wandb', {})
-        if not wandb_config.get('enabled', False):
-            print("wandb logging disabled in config")
-            return
-        
-        # 检查是否是分布式训练，如果是则只在主进程中初始化wandb
-        is_main_process = True
+        """初始化WandB - 改进版本，确保eval图表正确创建"""
         try:
-            import torch.distributed as dist
-            if dist.is_available() and dist.is_initialized():
-                # 分布式训练中，只有rank 0进程初始化wandb
-                is_main_process = dist.get_rank() == 0
-                if not is_main_process:
-                    print(f"进程 rank {dist.get_rank()}: 跳过wandb初始化（非主进程）")
-                    return
-        except ImportError:
-            # 如果torch.distributed不可用，默认为主进程
-            pass
-        
-        if not is_main_process:
-            return
-        
-        try:
-            # 只在主进程中初始化wandb
+            if not self.use_wandb or not self._is_main_process():
+                return
+            
+            if not WANDB_AVAILABLE:
+                print("⚠️ WandB未安装，跳过WandB初始化")
+                return
+            
+            import wandb
+            
+            # 获取配置
+            wandb_config = self.config.get('wandb', {})
+            project = wandb_config.get('project', 'qwen_classification')
+            run_name = wandb_config.get('run_name', f'run_{int(time.time())}')
+            tags = wandb_config.get('tags', [])
+            notes = wandb_config.get('notes', '')
+            
+            # 初始化WandB
             wandb.init(
-                project=wandb_config.get('project', 'qwen_classification'),
-                name=wandb_config.get('run_name'),
-                tags=wandb_config.get('tags', []),
-                notes=wandb_config.get('notes'),
+                project=project,
+                name=run_name,
+                tags=tags,
+                notes=notes,
                 config=self.config,
-                resume="allow"  # 允许恢复
+                dir=self.output_dir
             )
             
-            # 记录模型和训练配置
-            try:
-                if 'model' in self.config:
-                    wandb.config.update({
-                        'model_name': self.config['model'].get('pretrained_name', 'unknown'),
-                        'num_labels': self.config['model'].get('num_labels', 'unknown')
-                    })
-                
-                if 'training' in self.config:
-                    wandb.config.update({
-                        'learning_rate': self.config['training'].get('learning_rate', 'unknown'),
-                        'num_epochs': self.config['training'].get('num_epochs', 'unknown'),
-                        'batch_size': self.config.get('train_batch_size', 'unknown')
-                    })
-            except Exception as config_error:
-                print(f"⚠️  wandb配置更新失败: {config_error}")
-                print(f"   config内容: {self.config}")
-                import traceback
-                traceback.print_exc()
+            print(f"✅ WandB初始化成功")
+            print(f"   📊 项目: {project}")
+            print(f"   🏃 运行名称: {run_name}")
+            print(f"   🔗 URL: {wandb.run.url}")
             
-            self.use_wandb = True
-            print("✅ wandb initialized successfully")
+            # 定义指标
+            self._define_eval_metrics()
             
-            # 显示wandb链接信息
-            try:
-                if wandb.run is not None:
-                    print(f"📊 wandb project: {wandb.run.project}")
-                    print(f"🔗 wandb run: {wandb.run.name}")
-                    print(f"🚀 View run at: {wandb.run.url}")
-                    
-                    # 构建项目链接
-                    if hasattr(wandb.run, 'entity') and hasattr(wandb.run, 'project'):
-                        project_url = f"https://wandb.ai/{wandb.run.entity}/{wandb.run.project}"
-                        print(f"⭐ View project at: {project_url}")
-                    
-                    # 定义eval指标
-                    self._define_eval_metrics()
-                    
-                    # 强制创建eval图表
-                    self._create_eval_charts()
-                    
-                    # 创建详细图表
-                    self._create_detailed_charts()
-                    
-                    # 🔥 移除强制提交，避免增加额外的step
-                    # wandb.log({}, commit=True)
-                    print("🔧 WandB初始化完成")
-            except Exception as display_error:
-                print(f"⚠️  wandb链接显示失败: {display_error}")
-                print(f"   wandb.run状态: {getattr(wandb.run, 'state', 'unknown') if wandb.run else 'None'}")
-                import traceback
-                traceback.print_exc()
+            # 🔥 新增：强制创建eval图表
+            self._force_create_eval_charts()
+            
+            # 记录初始数据点，确保图表能够显示
+            self._log_initial_data_points()
             
         except Exception as e:
-            print(f"❌ Failed to initialize wandb: {e}")
-            print(f"   wandb_config: {wandb_config}")
-            print(f"   is_main_process: {is_main_process}")
-            print(f"   WANDB_AVAILABLE: {WANDB_AVAILABLE}")
+            print(f"❌ WandB初始化失败: {e}")
+            print(f"   配置: {self.config.get('wandb', {})}")
+            print(f"   输出目录: {self.output_dir}")
             import traceback
             traceback.print_exc()
             self.use_wandb = False
@@ -947,6 +898,90 @@ class TrainingMonitor:
         except Exception as e:
             print(f"⚠️  创建eval图表失败: {e}")
     
+    def _force_create_eval_charts(self):
+        """强制创建eval图表，确保eval指标能够显示"""
+        try:
+            if not self.use_wandb or not self._is_main_process():
+                return
+            
+            import wandb
+            if wandb.run is None:
+                return
+            
+            print("🔧 强制创建eval图表...")
+            
+            # 记录一个初始的eval数据点，强制创建eval图表
+            initial_eval_data = {
+                "eval/overall_loss": 999.0,  # 使用明显的初始值
+                "eval/overall_accuracy": 0.0,
+                "eval/overall_samples": 0,
+                "eval/overall_correct": 0
+            }
+            
+            # 添加数据集特定的eval指标
+            dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
+            for dataset_name in dataset_configs.keys():
+                initial_eval_data[f"eval/{dataset_name}_loss"] = 999.0
+                initial_eval_data[f"eval/{dataset_name}_accuracy"] = 0.0
+                initial_eval_data[f"eval/{dataset_name}_samples"] = 0
+            
+            # 记录初始eval数据点
+            wandb.log(initial_eval_data, step=0, commit=True)
+            print("✅ 已记录初始eval数据点，强制创建eval图表")
+            
+            # 强制同步到云端
+            try:
+                wandb.run.sync()
+                print("🔄 已强制同步初始eval数据到WandB云端")
+            except Exception as sync_error:
+                print(f"⚠️ 初始eval数据同步失败: {sync_error}")
+            
+        except Exception as e:
+            print(f"⚠️ 强制创建eval图表失败: {e}")
+    
+    def _log_initial_data_points(self):
+        """记录初始数据点，确保所有图表都能显示"""
+        try:
+            if not self.use_wandb or not self._is_main_process():
+                return
+            
+            import wandb
+            if wandb.run is None:
+                return
+            
+            print("🔧 记录初始数据点...")
+            
+            # 记录初始training数据点
+            initial_training_data = {
+                "training/loss": 999.0,
+                "training/lr": 0.0,
+                "training/epoch": 0.0,
+                "training/grad_norm": 0.0
+            }
+            
+            # 记录初始perf数据点
+            initial_perf_data = {
+                "perf/step_time": 0.0,
+                "perf/mfu": 0.0,
+                "perf/tokens_per_second": 0.0
+            }
+            
+            # 记录所有初始数据点
+            all_initial_data = {**initial_training_data, **initial_perf_data}
+            wandb.log(all_initial_data, step=0, commit=True)
+            
+            print("✅ 已记录初始数据点，确保所有图表都能显示")
+            
+            # 强制同步到云端
+            try:
+                wandb.run.sync()
+                print("🔄 已强制同步初始数据到WandB云端")
+            except Exception as sync_error:
+                print(f"⚠️ 初始数据同步失败: {sync_error}")
+            
+        except Exception as e:
+            print(f"⚠️ 记录初始数据点失败: {e}")
+
     def _create_detailed_charts(self):
         """创建详细的训练和评估指标图表 - 优化版本，不记录初始数据"""
         try:
@@ -1252,14 +1287,14 @@ class TrainingMonitor:
                 wandb.log(log_data, commit=commit)
                 step_info = "auto-step"
             
-            # 🔥 修复：移除强制同步，避免增加额外的step
-            # 注释掉强制同步，因为每次wandb.log都会增加step
-            # if commit and wandb.run is not None:
-            #     try:
-            #         # 强制同步数据
-            #         wandb.log({}, commit=True)
-            #     except Exception:
-            #         pass  # 静默处理提交错误
+            # 🔥 新增：强制同步到WandB云端
+            if commit and wandb.run is not None:
+                try:
+                    # 强制同步数据到云端
+                    wandb.run.sync()
+                    print(f"🔄 已强制同步到WandB云端 ({step_info})")
+                except Exception as sync_error:
+                    print(f"⚠️  强制同步失败: {sync_error}")
             
             # 输出记录信息（调试用）
             if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):
@@ -1271,6 +1306,16 @@ class TrainingMonitor:
                     print(f"   📊 Eval指标: {eval_metrics_list}")
                 if perf_metrics_count > 0:
                     print(f"   ⚡ Perf指标: {perf_metrics_list}")
+                
+                # 🔥 新增：显示WandB状态信息
+                try:
+                    current_wandb_step = getattr(wandb.run, 'step', 0)
+                    print(f"   🔍 WandB当前step: {current_wandb_step}")
+                    print(f"   🔗 WandB URL: {wandb.run.url}")
+                    print(f"   📊 WandB项目: {wandb.run.project}")
+                    print(f"   🏃 WandB状态: {getattr(wandb.run, 'state', 'unknown')}")
+                except Exception as wandb_info_error:
+                    print(f"   ⚠️  获取WandB状态失败: {wandb_info_error}")
             
         except Exception as e:
             print(f"❌ 记录指标到WandB失败: {e}")
