@@ -158,36 +158,47 @@ def _measure_flops_with_profiler(model, batch_size: int, seq_length: int) -> flo
         
         model.eval()
         
+        # 检查PyTorch版本和CUDA版本兼容性
+        torch_version = torch.__version__
+        cuda_version = torch.version.cuda if torch.cuda.is_available() else "N/A"
+        print(f"🔍 PyTorch版本: {torch_version}, CUDA版本: {cuda_version}")
+        
         # 尝试使用profiler测量FLOPs
         try:
+            # 首先尝试不使用with_flops参数
             with torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CUDA],
                 record_shapes=True,
-                with_flops=True,
                 profile_memory=False
             ) as prof:
                 with torch.no_grad():
                     _ = model(**dummy_batch)
             
-            # 收集FLOPs统计
-            total_flops = 0
+            # 检查profiler是否正常工作
             events = prof.events()
-            if events is not None:
+            if events is not None and len(events) > 0:
+                print(f"✅ Profiler正常工作，获取到 {len(events)} 个事件")
+                
+                # 尝试获取FLOPs信息
+                total_flops = 0
+                flops_events = 0
+                
                 for event in events:
                     if hasattr(event, 'flops') and event.flops > 0:
                         total_flops += event.flops
+                        flops_events += 1
                 
                 if total_flops > 0:
+                    print(f"✅ 成功获取FLOPs: {total_flops:.2e} (来自 {flops_events} 个事件)")
                     return float(total_flops)
                 else:
                     print("⚠️  Profiler未检测到FLOPs，使用估算方法")
             else:
-                print("⚠️  Profiler events为None，使用估算方法")
+                print("⚠️  Profiler events为空或None，使用估算方法")
                 
-        except (AttributeError, TypeError) as e:
-            print(f"PyTorch profiler不支持with_flops参数: {e}")
-        except Exception as e:
-            print(f"Profiler执行错误: {e}")
+        except Exception as profiler_error:
+            print(f"Profiler执行错误: {profiler_error}")
+            print("🔧 尝试使用估算方法")
         
         # 如果profiler失败，使用估算方法
         return _estimate_flops_fallback(model, dummy_batch, seq_length)
@@ -226,11 +237,36 @@ def profile_model_flops(model, batch_example: Dict) -> float:
         try:
             actual_seq_length = _get_actual_sequence_length(model, batch_example)
         except Exception as e:
-            print(f"⚠️  获取序列长度失败: {e}，使用估算")
+            print(f"⚠️  获取序列长度失败: {e}，使用输入长度")
             actual_seq_length = batch_example['input_ids'].size(1)
         
-        # 🔥 修复：直接使用估算方法，避免profiler错误
-        print("🔧 使用估算方法测量FLOPs（避免profiler错误）")
+        print(f"🔍 开始FLOPs profiling: 序列长度={actual_seq_length}")
+        
+        # 尝试使用profiler测量FLOPs
+        try:
+            # 测量前向传播FLOPs
+            forward_flops = _profile_forward_flops(model, batch_example)
+            
+            # 测量反向传播FLOPs
+            backward_flops = _profile_backward_flops(model, batch_example)
+            
+            total_flops = forward_flops + backward_flops
+            
+            if total_flops > 0:
+                print(f"✅ Profiler FLOPs测量成功:")
+                print(f"  前向传播FLOPs: {forward_flops:.2e}")
+                print(f"  反向传播FLOPs: {backward_flops:.2e}")
+                print(f"  总FLOPs: {total_flops:.2e}")
+                return float(total_flops)
+            else:
+                print("⚠️  Profiler未获取到FLOPs，使用估算方法")
+                
+        except Exception as profiler_error:
+            print(f"Profiler测量失败: {profiler_error}")
+            print("🔧 使用估算方法作为备选")
+        
+        # 如果profiler失败，使用估算方法
+        print("🔧 使用估算方法测量FLOPs")
         total_flops = _estimate_flops_fallback(model, batch_example, actual_seq_length)
         
         if total_flops > 0:
@@ -241,7 +277,7 @@ def profile_model_flops(model, batch_example: Dict) -> float:
         return float(total_flops)
         
     except Exception as e:
-        print(f"FLOPs profiling完全失败: {e}")
+        print(f"FLOPs测量完全失败: {e}")
         # 最后的回退：使用最基本的估算
         try:
             return _estimate_flops_fallback(model, batch_example)
@@ -254,12 +290,14 @@ def _profile_forward_flops(model, batch_example: Dict) -> float:
     try:
         model.eval()  # 使用eval模式避免dropout等影响FLOPs计算
         
-                # 检查PyTorch版本是否支持with_flops
+        # 检查PyTorch版本兼容性
+        torch_version = torch.__version__
+        print(f"🔍 前向传播Profiler - PyTorch版本: {torch_version}")
+        
         try:
             with torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
                 record_shapes=True,
-                with_flops=True,
                 profile_memory=False
             ) as prof:
                 with torch.no_grad():
@@ -269,33 +307,24 @@ def _profile_forward_flops(model, batch_example: Dict) -> float:
             # 获取FLOPs统计
             flops = 0
             events = prof.events()
-            if events is not None:
+            if events is not None and len(events) > 0:
                 for event in events:
                     if hasattr(event, 'flops') and event.flops > 0:
                         flops += event.flops
+                
+                if flops > 0:
+                    print(f"✅ 前向传播FLOPs: {flops:.2e}")
+                    return float(flops)
+                else:
+                    print("⚠️  前向传播Profiler未检测到FLOPs")
             else:
-                print("⚠️  前向传播Profiler events为None")
+                print("⚠️  前向传播Profiler events为空")
             
-            return float(flops)
+            return 0.0
             
-        except (AttributeError, TypeError) as e:
-            print(f"PyTorch profiler不支持with_flops参数: {e}")
-            # 🔥 修复：尝试不使用with_flops参数
-            try:
-                with torch.profiler.profile(
-                    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-                    record_shapes=True,
-                    profile_memory=False
-                ) as prof:
-                    with torch.no_grad():
-                        outputs = model(**batch_example)
-                
-                print("⚠️  使用不带with_flops的profiler，无法获取FLOPs")
-                return 0.0
-                
-            except Exception as e2:
-                print(f"Profiler完全失败: {e2}")
-                return 0.0
+        except Exception as e:
+            print(f"前向传播Profiler错误: {e}")
+            return 0.0
         
     except Exception as e:
         print(f"前向传播FLOPs测量错误: {e}")
@@ -306,17 +335,19 @@ def _profile_backward_flops(model, batch_example: Dict) -> float:
     try:
         model.train()  # 训练模式
         
+        # 检查PyTorch版本兼容性
+        torch_version = torch.__version__
+        print(f"🔍 反向传播Profiler - PyTorch版本: {torch_version}")
+        
         # 先执行前向传播（不在profiler中）
         outputs = model(**batch_example)
         loss = outputs.loss
         
-        # 检查PyTorch版本是否支持with_flops
         try:
             # 测量反向传播的FLOPs
             with torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
                 record_shapes=True,
-                with_flops=True,
                 profile_memory=False
             ) as prof:
                 # 仅执行反向传播
@@ -328,34 +359,25 @@ def _profile_backward_flops(model, batch_example: Dict) -> float:
             # 获取FLOPs统计
             flops = 0
             events = prof.events()
-            if events is not None:
+            if events is not None and len(events) > 0:
                 for event in events:
                     if hasattr(event, 'flops') and event.flops > 0:
                         flops += event.flops
+                
+                if flops > 0:
+                    print(f"✅ 反向传播FLOPs: {flops:.2e}")
+                    return float(flops)
+                else:
+                    print("⚠️  反向传播Profiler未检测到FLOPs")
             else:
-                print("⚠️  反向传播Profiler events为None")
+                print("⚠️  反向传播Profiler events为空")
             
-            return float(flops)
+            return 0.0
             
-        except (AttributeError, TypeError) as e:
-            print(f"PyTorch profiler不支持with_flops参数: {e}")
-            # 🔥 修复：尝试不使用with_flops参数
-            try:
-                with torch.profiler.profile(
-                    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-                    record_shapes=True,
-                    profile_memory=False
-                ) as prof:
-                    loss.backward()
-                
-                model.zero_grad()  # 确保清理梯度
-                print("⚠️  使用不带with_flops的profiler，无法获取反向传播FLOPs")
-                return 0.0
-                
-            except Exception as e2:
-                print(f"反向传播Profiler完全失败: {e2}")
-                model.zero_grad()  # 确保清理梯度
-                return 0.0
+        except Exception as e:
+            print(f"反向传播Profiler错误: {e}")
+            model.zero_grad()  # 确保清理梯度
+            return 0.0
         
     except Exception as e:
         print(f"反向传播FLOPs测量错误: {e}")
