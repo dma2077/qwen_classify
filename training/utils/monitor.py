@@ -819,9 +819,9 @@ class TrainingMonitor:
                     # 创建详细图表
                     self._create_detailed_charts()
                     
-                    # 🔥 强制提交初始化数据，确保eval指标被WandB识别
-                    wandb.log({}, commit=True)
-                    print("🔧 WandB初始化数据已提交")
+                    # 🔥 移除强制提交，避免增加额外的step
+                    # wandb.log({}, commit=True)
+                    print("🔧 WandB初始化完成")
             except Exception as display_error:
                 print(f"⚠️  wandb链接显示失败: {display_error}")
                 print(f"   wandb.run状态: {getattr(wandb.run, 'state', 'unknown') if wandb.run else 'None'}")
@@ -1127,11 +1127,12 @@ class TrainingMonitor:
                 "training/epoch_number": int(epoch)
             }
             
-            # 如果提供了current_step，使用它；否则不指定step让wandb自动处理
+            # 修复：总是使用指定的step，避免WandB自动step
             if current_step is not None:
                 wandb.log(log_data, step=int(current_step), commit=True)
             else:
-                wandb.log(log_data, commit=True)
+                # 如果没有提供step，跳过记录，避免WandB自动step
+                print("⚠️  log_epoch: 未提供current_step，跳过WandB记录")
         
         self.save_logs()
     
@@ -1244,13 +1245,14 @@ class TrainingMonitor:
                 wandb.log(log_data, commit=commit)
                 step_info = "auto-step"
             
-            # 🔥 修复：确保数据同步，特别是eval指标
-            if commit and wandb.run is not None:
-                try:
-                    # 强制同步数据
-                    wandb.log({}, commit=True)
-                except Exception:
-                    pass  # 静默处理提交错误
+            # 🔥 修复：移除强制同步，避免增加额外的step
+            # 注释掉强制同步，因为每次wandb.log都会增加step
+            # if commit and wandb.run is not None:
+            #     try:
+            #         # 强制同步数据
+            #         wandb.log({}, commit=True)
+            #     except Exception:
+            #         pass  # 静默处理提交错误
             
             # 输出记录信息（调试用）
             if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):

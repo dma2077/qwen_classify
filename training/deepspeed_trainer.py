@@ -698,7 +698,8 @@ class DeepSpeedTrainer:
             "step": epoch * len(self.train_loader)
         }
         
-        self.monitor.log_metrics(performance_data, epoch * len(self.train_loader), commit=True)
+        # 🔥 修复：暂时禁用性能统计记录，避免step冲突
+        # self.monitor.log_metrics(performance_data, epoch * len(self.train_loader), commit=True)
         
         if self.dist_ctx.is_main_process:
             print(f"🔧 Epoch {epoch} 性能统计:")
@@ -867,11 +868,12 @@ class DeepSpeedTrainer:
             if self.save_best_only:
                 self._cleanup_old_best_models()
             
+            # 🔥 修复：暂时禁用最佳模型记录，避免step冲突
             # 记录到wandb
-            self.monitor.log_metrics({
-                'best_model_step': step,
-                f'best_{self.best_metric_name}': current_value
-            }, step)
+            # self.monitor.log_metrics({
+            #     'best_model_step': step,
+            #     f'best_{self.best_metric_name}': current_value
+            # }, step)
             
             self.dist_ctx.print_main(
                 f"🏆 发现更好模型! {self.best_metric_name}: {current_value:.4f} "
@@ -1110,9 +1112,10 @@ class DeepSpeedTrainer:
                       f"Acc={overall_accuracy:.4f} ({overall_accuracy*100:.2f}%), "
                       f"Samples={overall_samples}")
         
+        # 🔥 修复：暂时禁用数据集指标记录，避免step冲突
         # 记录到wandb时使用commit=True，确保数据同步
-        if dataset_log_data:
-            self.monitor.log_metrics(dataset_log_data, step, commit=True)
+        # if dataset_log_data:
+        #     self.monitor.log_metrics(dataset_log_data, step, commit=True)
             
         # 如果不是eval模式，重置训练指标
         if not is_eval:
