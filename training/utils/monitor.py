@@ -175,26 +175,30 @@ def _measure_flops_with_profiler(model, batch_size: int, seq_length: int) -> flo
                     _ = model(**dummy_batch)
             
             # 检查profiler是否正常工作
-            events = prof.events()
-            if events is not None and len(events) > 0:
-                print(f"✅ Profiler正常工作，获取到 {len(events)} 个事件")
-                
-                # 尝试获取FLOPs信息
-                total_flops = 0
-                flops_events = 0
-                
-                for event in events:
-                    if hasattr(event, 'flops') and event.flops > 0:
-                        total_flops += event.flops
-                        flops_events += 1
-                
-                if total_flops > 0:
-                    print(f"✅ 成功获取FLOPs: {total_flops:.2e} (来自 {flops_events} 个事件)")
-                    return float(total_flops)
+            try:
+                events = prof.events()
+                if events is not None and len(events) > 0:
+                    print(f"✅ Profiler正常工作，获取到 {len(events)} 个事件")
+                    
+                    # 尝试获取FLOPs信息
+                    total_flops = 0
+                    flops_events = 0
+                    
+                    for event in events:
+                        if hasattr(event, 'flops') and event.flops > 0:
+                            total_flops += event.flops
+                            flops_events += 1
+                    
+                    if total_flops > 0:
+                        print(f"✅ 成功获取FLOPs: {total_flops:.2e} (来自 {flops_events} 个事件)")
+                        return float(total_flops)
+                    else:
+                        print("⚠️  Profiler未检测到FLOPs，使用估算方法")
                 else:
-                    print("⚠️  Profiler未检测到FLOPs，使用估算方法")
-            else:
-                print("⚠️  Profiler events为空或None，使用估算方法")
+                    print("⚠️  Profiler events为空或None，使用估算方法")
+            except Exception as events_error:
+                print(f"⚠️  获取profiler events失败: {events_error}")
+                print("🔧 使用估算方法")
                 
         except Exception as profiler_error:
             print(f"Profiler执行错误: {profiler_error}")
@@ -306,19 +310,24 @@ def _profile_forward_flops(model, batch_example: Dict) -> float:
             
             # 获取FLOPs统计
             flops = 0
-            events = prof.events()
-            if events is not None and len(events) > 0:
-                for event in events:
-                    if hasattr(event, 'flops') and event.flops > 0:
-                        flops += event.flops
-                
-                if flops > 0:
-                    print(f"✅ 前向传播FLOPs: {flops:.2e}")
-                    return float(flops)
+            try:
+                events = prof.events()
+                if events is not None and len(events) > 0:
+                    for event in events:
+                        if hasattr(event, 'flops') and event.flops > 0:
+                            flops += event.flops
+                    
+                    if flops > 0:
+                        print(f"✅ 前向传播FLOPs: {flops:.2e}")
+                        return float(flops)
+                    else:
+                        print("⚠️  前向传播Profiler未检测到FLOPs")
                 else:
-                    print("⚠️  前向传播Profiler未检测到FLOPs")
-            else:
-                print("⚠️  前向传播Profiler events为空")
+                    print("⚠️  前向传播Profiler events为空")
+            except Exception as events_error:
+                print(f"⚠️  获取前向传播profiler events失败: {events_error}")
+            
+            return 0.0
             
             return 0.0
             
@@ -358,19 +367,24 @@ def _profile_backward_flops(model, batch_example: Dict) -> float:
             
             # 获取FLOPs统计
             flops = 0
-            events = prof.events()
-            if events is not None and len(events) > 0:
-                for event in events:
-                    if hasattr(event, 'flops') and event.flops > 0:
-                        flops += event.flops
-                
-                if flops > 0:
-                    print(f"✅ 反向传播FLOPs: {flops:.2e}")
-                    return float(flops)
+            try:
+                events = prof.events()
+                if events is not None and len(events) > 0:
+                    for event in events:
+                        if hasattr(event, 'flops') and event.flops > 0:
+                            flops += event.flops
+                    
+                    if flops > 0:
+                        print(f"✅ 反向传播FLOPs: {flops:.2e}")
+                        return float(flops)
+                    else:
+                        print("⚠️  反向传播Profiler未检测到FLOPs")
                 else:
-                    print("⚠️  反向传播Profiler未检测到FLOPs")
-            else:
-                print("⚠️  反向传播Profiler events为空")
+                    print("⚠️  反向传播Profiler events为空")
+            except Exception as events_error:
+                print(f"⚠️  获取反向传播profiler events失败: {events_error}")
+            
+            return 0.0
             
             return 0.0
             
