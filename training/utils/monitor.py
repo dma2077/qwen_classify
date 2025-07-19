@@ -1157,13 +1157,19 @@ class TrainingMonitor:
             return
 
         try:
-            # 🔥 修复：检查step是否合理，避免step倒退
+            # 🔥 修复：检查step是否合理，避免step倒退，但对eval指标更宽松
             if step is not None:
                 current_wandb_step = getattr(wandb.run, 'step', 0)
                 if step < current_wandb_step:
-                    print(f"⚠️  Step倒退检测: 当前WandB step={current_wandb_step}, 尝试记录step={step}")
-                    print(f"   跳过本次记录，避免step冲突")
-                    return
+                    # 检查是否包含eval指标，如果是则允许记录（eval可能使用相同的step）
+                    has_eval_metrics = any('eval/' in key for key in metrics.keys())
+                    if has_eval_metrics:
+                        print(f"⚠️  Step倒退检测: 当前WandB step={current_wandb_step}, 尝试记录eval指标到step={step}")
+                        print(f"   允许eval指标记录，因为eval可能使用相同的step")
+                    else:
+                        print(f"⚠️  Step倒退检测: 当前WandB step={current_wandb_step}, 尝试记录step={step}")
+                        print(f"   跳过本次记录，避免step冲突")
+                        return
             
             # 确保所有值都是可序列化的
             log_data = {}

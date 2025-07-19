@@ -378,12 +378,12 @@ class DeepSpeedTrainer:
             training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
                                                        grad_norm_value, inputs, attention_mask, step_time)
             
-            # 🔥 修复：避免重复记录和step冲突
+            # 🔥 修复：eval步骤时也记录training指标，但使用不同的commit策略
             if is_eval_step:
-                # eval步骤时，不记录training指标，避免与eval指标冲突
-                pass
+                # eval步骤时，记录training指标但不commit，等待与eval指标一起commit
+                self.monitor.log_metrics(training_data, effective_step, commit=False)
             else:
-                # 普通步骤时，记录training指标
+                # 普通步骤时，记录training指标并立即commit
                 self.monitor.log_metrics(training_data, effective_step, commit=True)
             
     def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
@@ -417,8 +417,16 @@ class DeepSpeedTrainer:
             
             # 🔥 修复：确保eval指标正确记录到WandB
             if self.dist_ctx.is_main_process:
-                # 记录eval指标
+                # 记录eval指标，强制commit确保数据同步
                 self.monitor.log_metrics(eval_data, effective_step, commit=True)
+                
+                # 如果eval指标记录成功，强制同步一次
+                try:
+                    import wandb
+                    if wandb.run is not None:
+                        wandb.log({}, commit=True)
+                except Exception:
+                    pass
                 
                 # 输出详细的记录信息
                 eval_metrics_list = [k for k in eval_data.keys() if k.startswith('eval/')]
