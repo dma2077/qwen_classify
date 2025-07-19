@@ -745,7 +745,7 @@ class TrainingMonitor:
             return True
     
     def _init_wandb(self):
-        """初始化WandB - 修复版本，确保正确检查配置并初始化"""
+        """初始化WandB - 修复版本，避免step冲突"""
         try:
             # 🔥 修复：首先检查配置中是否启用了WandB
             wandb_config = self.config.get('wandb', {})
@@ -766,18 +766,29 @@ class TrainingMonitor:
             
             import wandb
             
-            # 🔥 新增：检查是否已经有活跃的WandB运行
+            # 🔥 重要：检查是否已经有活跃的WandB运行
             if wandb.run is not None:
                 print(f"⚠️ 检测到已存在的WandB运行: {wandb.run.name}")
                 print(f"   🔗 URL: {wandb.run.url}")
-                print("✅ 复用现有WandB运行，跳过重新初始化")
-                # 仍需定义指标
-                self._define_eval_metrics()
-                return
+                print(f"   📊 当前step: {getattr(wandb.run, 'step', 0)}")
+                
+                # 决定是否复用现有运行
+                choice = "reuse"  # 默认复用，避免step冲突
+                
+                if choice == "reuse":
+                    print("✅ 复用现有WandB运行")
+                    # 仍需定义指标
+                    self._define_eval_metrics()
+                    return
+                else:
+                    print("🔄 结束现有运行，创建新运行")
+                    wandb.finish()
             
             # 获取配置参数
             project = wandb_config.get('project', 'qwen_classification')
-            run_name = wandb_config.get('run_name', f'run_{int(time.time())}')
+            run_name = wandb_config.get('run_name')
+            if run_name is None:
+                run_name = f'run_{int(time.time())}'
             tags = wandb_config.get('tags', [])
             notes = wandb_config.get('notes', '')
             
@@ -786,25 +797,27 @@ class TrainingMonitor:
             print(f"   🏃 运行名称: {run_name}")
             print(f"   🏷️ 标签: {tags}")
             
-            # 初始化WandB
+            # 🔥 关键修复：使用reinit=True确保干净的初始化
             wandb.init(
                 project=project,
                 name=run_name,
                 tags=tags,
                 notes=notes,
                 config=self.config,
-                dir=self.output_dir
+                dir=self.output_dir,
+                reinit=True  # 确保干净的初始化
             )
             
             print(f"✅ WandB初始化成功")
             print(f"   🔗 URL: {wandb.run.url}")
             print(f"   🆔 Run ID: {wandb.run.id}")
+            print(f"   📊 初始step: {getattr(wandb.run, 'step', 0)}")
             
-            # 定义指标但不记录初始数据点
+            # 定义指标（这是安全的，不会影响step）
             self._define_eval_metrics()
             
-            # 🔥 关键修复：完全避免记录任何初始数据点
-            print("✅ WandB初始化完成，等待真实数据记录（不记录初始数据点）")
+            # 🔥 关键修复：完全避免记录任何初始数据
+            print("✅ WandB初始化完成，等待真实数据（不记录初始数据）")
             
         except Exception as e:
             print(f"❌ WandB初始化失败: {e}")
@@ -1236,7 +1249,7 @@ class TrainingMonitor:
                 traceback.print_exc()
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
-        """通用的指标记录方法 - 彻底修复WandB step冲突问题"""
+        """通用的指标记录方法 - 彻底修复WandB step=0问题"""
         # 检查是否是主进程且wandb可用
         if not self.use_wandb or not self._is_main_process():
             return
@@ -1290,50 +1303,46 @@ class TrainingMonitor:
                     perf_metrics_count += 1
                     perf_metrics_list.append(key)
             
-            # 🔥 彻底修复：完全控制WandB step，避免自动递增
-            if step is not None and step > 0:
+            # 🔥 彻底修复：使用最可靠的step控制方法
+            if step is not None and step >= 0:
                 actual_step = int(step)
                 
-                # 🔥 关键修复：重置WandB内部step计数器到我们想要的值
-                if hasattr(wandb.run, '_step'):
-                    # 强制设置WandB内部step为我们想要的值-1，因为wandb.log会自动+1
-                    wandb.run._step = actual_step - 1
-                    print(f"🔧 强制设置WandB内部step为: {actual_step - 1}")
-                
-                # 记录数据，不使用step参数，让WandB使用内部step
-                wandb.log(log_data, commit=commit)
+                # 🔥 方法1：直接使用step参数，这是最可靠的方法
+                print(f"🔧 记录数据到step {actual_step}")
+                wandb.log(log_data, step=actual_step, commit=commit)
                 step_info = f"step={actual_step}"
                 
-                # 验证step是否正确
+                # 验证记录结果
                 current_wandb_step = getattr(wandb.run, 'step', 0)
+                print(f"🔍 记录后WandB step: {current_wandb_step}")
+                
                 if current_wandb_step == actual_step:
-                    print(f"✅ Step同步成功: {actual_step}")
+                    print(f"✅ Step记录成功: {actual_step}")
                 else:
-                    print(f"⚠️ Step不同步: 期望{actual_step}, WandB={current_wandb_step}")
+                    print(f"⚠️ Step可能不匹配: 期望{actual_step}, WandB显示{current_wandb_step}")
+                    # 但这不一定是错误，因为WandB可能会在后台更新step
                     
-            elif step == 0:
-                # 🔥 关键：跳过step=0的数据记录
-                print(f"⚠️ 跳过step=0的数据记录，避免step冲突")
-                return
             else:
-                # 如果step为None，让WandB自动处理
+                # 如果step为None或负数，使用自动step
                 wandb.log(log_data, commit=commit)
                 step_info = "auto-step"
+                current_wandb_step = getattr(wandb.run, 'step', 0)
+                print(f"🔍 自动step记录，WandB step: {current_wandb_step}")
             
-            # 🔥 修复：改进同步策略
+            # 改进同步策略
             if commit and wandb.run is not None:
                 try:
                     # 等待数据同步
                     import time
-                    time.sleep(0.05)
+                    time.sleep(0.1)  # 增加等待时间
                     
-                    print(f"🔄 WandB数据已提交并同步 ({step_info})")
+                    print(f"🔄 WandB数据已提交 ({step_info})")
                 except Exception as sync_error:
-                    print(f"⚠️ WandB同步操作失败: {sync_error}")
+                    print(f"⚠️ WandB同步失败: {sync_error}")
             
             # 输出记录信息（调试用）
             if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):
-                print(f"📊 WandB记录成功 ({step_info}): "
+                print(f"📊 WandB记录完成 ({step_info}): "
                       f"training={training_metrics_count}, eval={eval_metrics_count}, perf={perf_metrics_count}")
                 if training_metrics_count > 0:
                     print(f"   📈 Training指标: {training_metrics_list}")
@@ -1342,10 +1351,10 @@ class TrainingMonitor:
                 if perf_metrics_count > 0:
                     print(f"   ⚡ Perf指标: {perf_metrics_list}")
                 
-                # 🔥 修复：显示更详细的WandB状态信息
+                # 显示WandB状态信息
                 try:
-                    current_wandb_step = getattr(wandb.run, 'step', 0)
-                    print(f"   🔍 WandB当前step: {current_wandb_step}")
+                    final_wandb_step = getattr(wandb.run, 'step', 0)
+                    print(f"   🔍 最终WandB step: {final_wandb_step}")
                     print(f"   🔗 WandB URL: {wandb.run.url}")
                     print(f"   📊 WandB项目: {wandb.run.project}")
                     
@@ -1353,27 +1362,36 @@ class TrainingMonitor:
                     if hasattr(wandb.run, 'state'):
                         print(f"   🏃 WandB状态: {wandb.run.state}")
                     
-                    # 🔥 新增：检查WandB数据是否真的被记录
+                    # 检查summary数据
                     try:
-                        # 检查最近的数据
                         if hasattr(wandb.run, 'summary') and wandb.run.summary:
                             summary_keys = list(wandb.run.summary.keys())
-                            print(f"   📋 WandB summary有数据: {len(summary_keys)}个指标")
+                            print(f"   📋 WandB summary: {len(summary_keys)}个指标")
+                            
+                            # 检查training指标是否存在
                             if training_metrics_list:
                                 found_training = [k for k in training_metrics_list if k in summary_keys]
                                 if found_training:
-                                    print(f"   ✅ Training指标已确认存在: {found_training}")
+                                    print(f"   ✅ Training指标已确认: {found_training}")
                                 else:
-                                    print(f"   ❌ Training指标未找到在summary中")
+                                    print(f"   ⚠️ Training指标未在summary中找到")
+                                    
+                            # 检查eval指标是否存在  
+                            if eval_metrics_list:
+                                found_eval = [k for k in eval_metrics_list if k in summary_keys]
+                                if found_eval:
+                                    print(f"   ✅ Eval指标已确认: {found_eval}")
+                                else:
+                                    print(f"   ⚠️ Eval指标未在summary中找到")
                         else:
-                            print(f"   ⚠️ WandB summary为空或不可用")
+                            print(f"   ⚠️ WandB summary为空")
                     except Exception as summary_error:
-                        print(f"   ⚠️ 检查WandB summary失败: {summary_error}")
+                        print(f"   ⚠️ 检查summary失败: {summary_error}")
                     
-                    print(f"   ✅ WandB数据记录成功")
+                    print(f"   ✅ WandB记录流程完成")
                         
                 except Exception as wandb_info_error:
-                    print(f"   ⚠️ 获取WandB状态失败: {wandb_info_error}")
+                    print(f"   ⚠️ 获取WandB信息失败: {wandb_info_error}")
             
         except Exception as e:
             print(f"❌ 记录指标到WandB失败: {e}")
