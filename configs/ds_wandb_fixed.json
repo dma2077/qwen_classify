@@ -20,7 +20,7 @@
   },
   "zero_allow_untested_optimizer": true,
   "gradient_clipping": 1.0,
-  "steps_per_print": 2000,
+  "steps_per_print": 20,
   "monitor_config": {
     "enabled": true,
     "tensorboard": {
@@ -36,4 +36,4 @@
       "enabled": false
     }
   }
-}
+} 

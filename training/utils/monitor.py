@@ -745,23 +745,37 @@ class TrainingMonitor:
             return True
     
     def _init_wandb(self):
-        """初始化WandB - 修复版本，移除可能干扰的初始数据点"""
+        """初始化WandB - 修复版本，确保正确检查配置并初始化"""
         try:
-            if not self.use_wandb or not self._is_main_process():
-                return
+            # 🔥 修复：首先检查配置中是否启用了WandB
+            wandb_config = self.config.get('wandb', {})
+            wandb_enabled = wandb_config.get('enabled', False)
             
-            if not WANDB_AVAILABLE:
-                print("⚠️ WandB未安装，跳过WandB初始化")
+            # 🔥 关键修复：根据配置设置use_wandb标志
+            if wandb_enabled and WANDB_AVAILABLE and self._is_main_process():
+                self.use_wandb = True
+            else:
+                self.use_wandb = False
+                if not wandb_enabled:
+                    print("⚠️ WandB在配置中被禁用")
+                elif not WANDB_AVAILABLE:
+                    print("⚠️ WandB未安装，跳过WandB初始化")
+                elif not self._is_main_process():
+                    print("⚠️ 非主进程，跳过WandB初始化")
                 return
             
             import wandb
             
-            # 获取配置
-            wandb_config = self.config.get('wandb', {})
+            # 获取配置参数
             project = wandb_config.get('project', 'qwen_classification')
             run_name = wandb_config.get('run_name', f'run_{int(time.time())}')
             tags = wandb_config.get('tags', [])
             notes = wandb_config.get('notes', '')
+            
+            print(f"🔧 开始初始化WandB...")
+            print(f"   📊 项目: {project}")
+            print(f"   🏃 运行名称: {run_name}")
+            print(f"   🏷️ 标签: {tags}")
             
             # 初始化WandB
             wandb.init(
@@ -774,9 +788,8 @@ class TrainingMonitor:
             )
             
             print(f"✅ WandB初始化成功")
-            print(f"   📊 项目: {project}")
-            print(f"   🏃 运行名称: {run_name}")
             print(f"   🔗 URL: {wandb.run.url}")
+            print(f"   🆔 Run ID: {wandb.run.id}")
             
             # 定义指标但不记录初始数据点
             self._define_eval_metrics()
@@ -788,6 +801,8 @@ class TrainingMonitor:
             print(f"❌ WandB初始化失败: {e}")
             print(f"   配置: {self.config.get('wandb', {})}")
             print(f"   输出目录: {self.output_dir}")
+            print(f"   WANDB_AVAILABLE: {WANDB_AVAILABLE}")
+            print(f"   is_main_process: {self._is_main_process()}")
             import traceback
             traceback.print_exc()
             self.use_wandb = False
