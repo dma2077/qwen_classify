@@ -152,26 +152,48 @@ def _measure_flops_with_profiler(model, batch_size: int, seq_length: int) -> flo
         device = next(model.parameters()).device
         dummy_batch = _create_dummy_batch_for_profiling(batch_size, seq_length, device)
         
+        if not dummy_batch:
+            print("⚠️  无法创建虚拟batch，跳过FLOPs测量")
+            return 0.0
+        
         model.eval()
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CUDA],
-            record_shapes=True,
-            with_flops=True,
-            profile_memory=False
-        ) as prof:
-            with torch.no_grad():
-                _ = model(**dummy_batch)
         
-        # 收集FLOPs统计
-        total_flops = 0
-        for event in prof.events():
-            if hasattr(event, 'flops') and event.flops > 0:
-                total_flops += event.flops
+        # 尝试使用profiler测量FLOPs
+        try:
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CUDA],
+                record_shapes=True,
+                with_flops=True,
+                profile_memory=False
+            ) as prof:
+                with torch.no_grad():
+                    _ = model(**dummy_batch)
+            
+            # 收集FLOPs统计
+            total_flops = 0
+            events = prof.events()
+            if events is not None:
+                for event in events:
+                    if hasattr(event, 'flops') and event.flops > 0:
+                        total_flops += event.flops
+                
+                if total_flops > 0:
+                    return float(total_flops)
+                else:
+                    print("⚠️  Profiler未检测到FLOPs，使用估算方法")
+            else:
+                print("⚠️  Profiler events为None，使用估算方法")
+                
+        except (AttributeError, TypeError) as e:
+            print(f"PyTorch profiler不支持with_flops参数: {e}")
+        except Exception as e:
+            print(f"Profiler执行错误: {e}")
         
-        return float(total_flops)
+        # 如果profiler失败，使用估算方法
+        return _estimate_flops_fallback(model, dummy_batch, seq_length)
         
     except Exception as e:
-        print(f"Profiler FLOPs测量错误: {e}")
+        print(f"FLOPs测量完全失败: {e}")
         return 0.0
 
 def _create_dummy_batch_for_profiling(batch_size: int, seq_length: int, device: torch.device) -> Dict:
@@ -201,41 +223,38 @@ def profile_model_flops(model, batch_example: Dict) -> float:
         model.train()
         
         # 获取实际的序列长度（包括visual tokens + text tokens）
-        actual_seq_length = _get_actual_sequence_length(model, batch_example)
+        try:
+            actual_seq_length = _get_actual_sequence_length(model, batch_example)
+        except Exception as e:
+            print(f"⚠️  获取序列长度失败: {e}，使用估算")
+            actual_seq_length = batch_example['input_ids'].size(1)
         
-        # 分别测量前向传播和反向传播的FLOPs
-        forward_flops = _profile_forward_flops(model, batch_example)
-        backward_flops = _profile_backward_flops(model, batch_example)
-        
-        total_flops = forward_flops + backward_flops
+        # 🔥 修复：直接使用估算方法，避免profiler错误
+        print("🔧 使用估算方法测量FLOPs（避免profiler错误）")
+        total_flops = _estimate_flops_fallback(model, batch_example, actual_seq_length)
         
         if total_flops > 0:
             print(f"文本tokens长度: {batch_example['input_ids'].size(1)}")
             print(f"实际序列长度(包含visual tokens): {actual_seq_length}")
-            print(f"前向传播FLOPs: {forward_flops:.2e}")
-            print(f"反向传播FLOPs: {backward_flops:.2e}")
-            print(f"总FLOPs: {total_flops:.2e}")
-        else:
-            print("无法通过profiler测量FLOPs，使用估算方法")
-            total_flops = _estimate_flops_fallback(model, batch_example, actual_seq_length)
+            print(f"估算总FLOPs: {total_flops:.2e}")
         
         return float(total_flops)
         
     except Exception as e:
-        print(f"FLOPs profiling错误: {e}")
-        # 尝试获取序列长度用于估算
+        print(f"FLOPs profiling完全失败: {e}")
+        # 最后的回退：使用最基本的估算
         try:
-            actual_seq_length = _get_actual_sequence_length(model, batch_example)
-            return _estimate_flops_fallback(model, batch_example, actual_seq_length)
-        except:
             return _estimate_flops_fallback(model, batch_example)
+        except:
+            print("❌ 所有FLOPs测量方法都失败，返回0")
+            return 0.0
 
 def _profile_forward_flops(model, batch_example: Dict) -> float:
     """测量前向传播的FLOPs"""
     try:
         model.eval()  # 使用eval模式避免dropout等影响FLOPs计算
         
-        # 检查PyTorch版本是否支持with_flops
+                # 检查PyTorch版本是否支持with_flops
         try:
             with torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
@@ -249,15 +268,34 @@ def _profile_forward_flops(model, batch_example: Dict) -> float:
             
             # 获取FLOPs统计
             flops = 0
-            for event in prof.events():
-                if hasattr(event, 'flops') and event.flops > 0:
-                    flops += event.flops
+            events = prof.events()
+            if events is not None:
+                for event in events:
+                    if hasattr(event, 'flops') and event.flops > 0:
+                        flops += event.flops
+            else:
+                print("⚠️  前向传播Profiler events为None")
             
             return float(flops)
             
         except (AttributeError, TypeError) as e:
             print(f"PyTorch profiler不支持with_flops参数: {e}")
-            return 0.0
+            # 🔥 修复：尝试不使用with_flops参数
+            try:
+                with torch.profiler.profile(
+                    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                    record_shapes=True,
+                    profile_memory=False
+                ) as prof:
+                    with torch.no_grad():
+                        outputs = model(**batch_example)
+                
+                print("⚠️  使用不带with_flops的profiler，无法获取FLOPs")
+                return 0.0
+                
+            except Exception as e2:
+                print(f"Profiler完全失败: {e2}")
+                return 0.0
         
     except Exception as e:
         print(f"前向传播FLOPs测量错误: {e}")
@@ -289,16 +327,35 @@ def _profile_backward_flops(model, batch_example: Dict) -> float:
             
             # 获取FLOPs统计
             flops = 0
-            for event in prof.events():
-                if hasattr(event, 'flops') and event.flops > 0:
-                    flops += event.flops
+            events = prof.events()
+            if events is not None:
+                for event in events:
+                    if hasattr(event, 'flops') and event.flops > 0:
+                        flops += event.flops
+            else:
+                print("⚠️  反向传播Profiler events为None")
             
             return float(flops)
             
         except (AttributeError, TypeError) as e:
             print(f"PyTorch profiler不支持with_flops参数: {e}")
-            model.zero_grad()  # 确保清理梯度
-            return 0.0
+            # 🔥 修复：尝试不使用with_flops参数
+            try:
+                with torch.profiler.profile(
+                    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                    record_shapes=True,
+                    profile_memory=False
+                ) as prof:
+                    loss.backward()
+                
+                model.zero_grad()  # 确保清理梯度
+                print("⚠️  使用不带with_flops的profiler，无法获取反向传播FLOPs")
+                return 0.0
+                
+            except Exception as e2:
+                print(f"反向传播Profiler完全失败: {e2}")
+                model.zero_grad()  # 确保清理梯度
+                return 0.0
         
     except Exception as e:
         print(f"反向传播FLOPs测量错误: {e}")
@@ -307,19 +364,19 @@ def _profile_backward_flops(model, batch_example: Dict) -> float:
 def _get_actual_sequence_length(model, batch_example: Dict) -> int:
     """获取实际的序列长度（包括visual tokens + text tokens）"""
     try:
-        # 临时设置模型为eval模式以获取输出shape
-        model.eval()
-        
-        with torch.no_grad():
-            # 执行前向传播获取输出
-            outputs = model(**batch_example)
-            # 获取实际的序列长度
-            actual_seq_length = outputs.last_hidden_state.size(1)
-        
-        # 恢复训练模式
-        model.train()
-        
-        return actual_seq_length
+        # 🔥 修复：直接通过attention_mask计算实际序列长度
+        # 这是最准确的方法，因为attention_mask覆盖了完整的序列（visual + text tokens）
+        if 'attention_mask' in batch_example and batch_example['attention_mask'] is not None:
+            attention_mask = batch_example['attention_mask']
+            # 计算每个样本的有效长度，然后取平均值
+            valid_lengths = attention_mask.sum(dim=1)  # [batch_size]
+            actual_seq_length = int(valid_lengths.float().mean().item())
+            return actual_seq_length
+        else:
+            # 如果没有attention_mask，使用输入长度作为近似
+            actual_seq_length = batch_example['input_ids'].size(1)
+            print(f"⚠️  没有attention_mask，使用输入长度: {actual_seq_length}")
+            return actual_seq_length
         
     except Exception as e:
         print(f"获取实际序列长度错误: {e}")
