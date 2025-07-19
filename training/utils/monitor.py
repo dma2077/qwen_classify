@@ -834,7 +834,7 @@ class TrainingMonitor:
         self.model_ref = model
     
     def _define_eval_metrics(self):
-        """定义eval指标，确保wandb正确识别和显示 - 改进版本"""
+        """定义eval指标，确保wandb正确识别和显示 - 修复版本"""
         try:
             if not self.use_wandb or not self._is_main_process():
                 return
@@ -843,57 +843,62 @@ class TrainingMonitor:
             if wandb.run is None:
                 return
             
-            # 🔥 关键修复：分别定义training和eval指标，使用统一的x轴
-            wandb.define_metric("step")
+            # 🔥 关键修复：不再定义step字段，让WandB使用内部_step作为x轴
+            # wandb.define_metric("step")  # 删除这行，让WandB使用默认的step机制
+            
+            # 🔥 修复：使用默认的step机制，不指定step_metric
+            # 这样WandB会自动使用wandb.log()中的step参数作为x轴
             
             # 定义训练指标组
-            wandb.define_metric("training/loss", step_metric="step", summary="min")
-            wandb.define_metric("training/lr", step_metric="step", summary="last")
-            wandb.define_metric("training/epoch", step_metric="step", summary="last")
-            wandb.define_metric("training/grad_norm", step_metric="step", summary="last")
+            wandb.define_metric("training/loss", summary="min")
+            wandb.define_metric("training/lr", summary="last")
+            wandb.define_metric("training/epoch", summary="last")
+            wandb.define_metric("training/grad_norm", summary="last")
             
-            # 定义评估指标组 - 🔥 确保所有eval指标都被定义
-            wandb.define_metric("eval/overall_loss", step_metric="step", summary="min")
-            wandb.define_metric("eval/overall_accuracy", step_metric="step", summary="max")
-            wandb.define_metric("eval/overall_samples", step_metric="step", summary="last")
-            wandb.define_metric("eval/overall_correct", step_metric="step", summary="last")
+            # 定义评估指标组
+            wandb.define_metric("eval/overall_loss", summary="min")
+            wandb.define_metric("eval/overall_accuracy", summary="max")
+            wandb.define_metric("eval/overall_samples", summary="last")
+            wandb.define_metric("eval/overall_correct", summary="last")
             
             # 定义数据集特定的eval指标
             dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
             for dataset_name in dataset_configs.keys():
-                wandb.define_metric(f"eval/{dataset_name}_loss", step_metric="step", summary="min")
-                wandb.define_metric(f"eval/{dataset_name}_accuracy", step_metric="step", summary="max")
-                wandb.define_metric(f"eval/{dataset_name}_samples", step_metric="step", summary="last")
+                wandb.define_metric(f"eval/{dataset_name}_loss", summary="min")
+                wandb.define_metric(f"eval/{dataset_name}_accuracy", summary="max")
+                wandb.define_metric(f"eval/{dataset_name}_samples", summary="last")
             
             # 定义最终评估指标
-            wandb.define_metric("eval/final_overall_loss", step_metric="step", summary="min")
-            wandb.define_metric("eval/final_overall_accuracy", step_metric="step", summary="max")
-            wandb.define_metric("eval/final_overall_samples", step_metric="step", summary="last")
-            wandb.define_metric("eval/final_overall_correct", step_metric="step", summary="last")
+            wandb.define_metric("eval/final_overall_loss", summary="min")
+            wandb.define_metric("eval/final_overall_accuracy", summary="max")
+            wandb.define_metric("eval/final_overall_samples", summary="last")
+            wandb.define_metric("eval/final_overall_correct", summary="last")
             
             # 定义性能指标组
-            wandb.define_metric("perf/step_time", step_metric="step", summary="mean")
-            wandb.define_metric("perf/steps_per_second", step_metric="step", summary="mean")
-            wandb.define_metric("perf/mfu", step_metric="step", summary="mean")
-            wandb.define_metric("perf/mfu_percent", step_metric="step", summary="mean")
-            wandb.define_metric("perf/tokens_per_second", step_metric="step", summary="mean")
-            wandb.define_metric("perf/samples_per_second", step_metric="step", summary="mean")
-            wandb.define_metric("perf/actual_flops", step_metric="step", summary="last")
-            wandb.define_metric("perf/actual_seq_length", step_metric="step", summary="last")
-            wandb.define_metric("perf/flops_per_second", step_metric="step", summary="mean")
+            wandb.define_metric("perf/step_time", summary="mean")
+            wandb.define_metric("perf/steps_per_second", summary="mean")
+            wandb.define_metric("perf/mfu", summary="mean")
+            wandb.define_metric("perf/mfu_percent", summary="mean")
+            wandb.define_metric("perf/tokens_per_second", summary="mean")
+            wandb.define_metric("perf/samples_per_second", summary="mean")
+            wandb.define_metric("perf/actual_flops", summary="last")
+            wandb.define_metric("perf/actual_seq_length", summary="last")
+            wandb.define_metric("perf/flops_per_second", summary="mean")
             
-            # 使用通配符定义其他可能的指标
-            wandb.define_metric("training/*", step_metric="step")
-            wandb.define_metric("eval/*", step_metric="step")
-            wandb.define_metric("perf/*", step_metric="step")
+            # 🔥 新增：定义通配符指标，确保所有新指标都能正确显示
+            wandb.define_metric("training/*")
+            wandb.define_metric("eval/*")
+            wandb.define_metric("perf/*")
             
-            print("✅ 已定义详细指标分组：training/*, eval/*, perf/* 指标使用统一的'step'轴")
-            print(f"   📊 已定义的具体eval指标: overall_loss, overall_accuracy, overall_samples, overall_correct")
+            print("✅ WandB指标定义完成 - 使用默认step机制")
+            print(f"   📊 Training指标: loss, lr, epoch, grad_norm")
+            print(f"   📊 Eval指标: overall_loss, overall_accuracy, overall_samples, overall_correct")
+            print(f"   📊 Perf指标: step_time, mfu, tokens_per_second等")
             if dataset_configs:
-                print(f"   📂 已定义的数据集eval指标: {list(dataset_configs.keys())}")
+                print(f"   📂 数据集指标: {list(dataset_configs.keys())}")
             
         except Exception as e:
-            print(f"⚠️  定义eval指标失败: {e}")
+            print(f"⚠️ 定义指标失败: {e}")
             import traceback
             traceback.print_exc()
     
