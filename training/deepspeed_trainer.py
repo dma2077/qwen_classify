@@ -336,19 +336,12 @@ class DeepSpeedTrainer:
         should_log_perf = (effective_step % 20 == 0)  # 每20步记录一次性能指标
         
         if should_log_perf:
-            print(f"🔧 检查性能指标记录条件 (step={effective_step}):")
-            print(f"   should_log_perf: {should_log_perf}")
-            print(f"   step_time: {step_time}")
-            print(f"   step_time > 0: {step_time > 0}")
-            
             if step_time > 0:
                 training_data.update({
                     "perf/step_time": float(step_time),
                     "perf/steps_per_second": float(1.0 / step_time),
                 })
-                
-                print(f"   ✅ 基础性能指标已添加: step_time={step_time:.3f}s")
-                
+                                
                 # 添加MFU相关指标
                 current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, step_time)
                 if current_mfu is not None:
@@ -364,12 +357,6 @@ class DeepSpeedTrainer:
                         "perf/actual_seq_length": float(current_seq_length),
                         "perf/flops_per_second": float(self.monitor.actual_flops / step_time),
                     })
-                    
-                    print(f"   ✅ MFU指标已添加: {current_mfu:.3f} ({current_mfu*100:.1f}%)")
-                    
-                    # 输出MFU记录信息
-                    if self.dist_ctx.is_main_process:
-                        print(f"📊 MFU记录 (step={effective_step}): {current_mfu:.3f} ({current_mfu*100:.1f}%)")
                 else:
                     # 如果MFU计算失败，记录原因
                     if self.dist_ctx.is_main_process:

@@ -1327,19 +1327,12 @@ class TrainingMonitor:
                 
                 # 验证最终step
                 final_wandb_step = getattr(wandb.run, 'step', 0)
-                print(f"🔍 最终WandB step: {final_wandb_step}")
-                
-                if final_wandb_step == actual_step:
-                    print(f"✅ Step完全同步: {actual_step}")
-                else:
-                    print(f"⚠️ Step仍不匹配: 期望{actual_step}, 实际{final_wandb_step}")
                     
             else:
                 # 如果step为None或负数，使用自动step
                 wandb.log(log_data, commit=commit)
                 step_info = "auto-step"
                 current_wandb_step = getattr(wandb.run, 'step', 0)
-                print(f"🔍 自动step记录，WandB step: {current_wandb_step}")
             
             # 改进同步策略
             if commit and wandb.run is not None:
@@ -1347,8 +1340,6 @@ class TrainingMonitor:
                     # 等待数据同步
                     import time
                     time.sleep(0.1)
-                    
-                    print(f"🔄 WandB数据已提交 ({step_info})")
                 except Exception as sync_error:
                     print(f"⚠️ WandB同步失败: {sync_error}")
             
@@ -1362,49 +1353,6 @@ class TrainingMonitor:
                     print(f"   📊 Eval指标: {eval_metrics_list}")
                 if perf_metrics_count > 0:
                     print(f"   ⚡ Perf指标: {perf_metrics_list}")
-                
-                # 显示WandB状态信息
-                try:
-                    final_wandb_step = getattr(wandb.run, 'step', 0)
-                    print(f"   🔍 最终WandB step: {final_wandb_step}")
-                    print(f"   🔗 WandB URL: {wandb.run.url}")
-                    print(f"   📊 WandB项目: {wandb.run.project}")
-                    
-                    # 检查WandB run状态
-                    if hasattr(wandb.run, 'state'):
-                        print(f"   🏃 WandB状态: {wandb.run.state}")
-                    
-                    # 检查summary数据
-                    try:
-                        if hasattr(wandb.run, 'summary') and wandb.run.summary:
-                            summary_keys = list(wandb.run.summary.keys())
-                            print(f"   📋 WandB summary: {len(summary_keys)}个指标")
-                            
-                            # 检查training指标是否存在
-                            if training_metrics_list:
-                                found_training = [k for k in training_metrics_list if k in summary_keys]
-                                if found_training:
-                                    print(f"   ✅ Training指标已确认: {found_training}")
-                                else:
-                                    print(f"   ⚠️ Training指标未在summary中找到")
-                                    
-                            # 检查eval指标是否存在  
-                            if eval_metrics_list:
-                                found_eval = [k for k in eval_metrics_list if k in summary_keys]
-                                if found_eval:
-                                    print(f"   ✅ Eval指标已确认: {found_eval}")
-                                else:
-                                    print(f"   ⚠️ Eval指标未在summary中找到")
-                        else:
-                            print(f"   ⚠️ WandB summary为空")
-                    except Exception as summary_error:
-                        print(f"   ⚠️ 检查summary失败: {summary_error}")
-                    
-                    print(f"   ✅ WandB记录流程完成")
-                        
-                except Exception as wandb_info_error:
-                    print(f"   ⚠️ 获取WandB信息失败: {wandb_info_error}")
-            
         except Exception as e:
             print(f"❌ 记录指标到WandB失败: {e}")
             print(f"   尝试记录的指标: {list(metrics.keys())}")
