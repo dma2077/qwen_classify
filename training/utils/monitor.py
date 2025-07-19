@@ -845,7 +845,7 @@ class TrainingMonitor:
     def _define_eval_metrics(self):
         """定义eval指标，确保wandb正确识别和显示 - 改进版本"""
         try:
-            if not self.use_wandb or not self._is_main_process:
+            if not self.use_wandb or not self._is_main_process():
                 return
             
             import wandb
@@ -909,7 +909,7 @@ class TrainingMonitor:
     def _create_eval_charts(self):
         """强制确保eval图表在wandb界面中可见"""
         try:
-            if not self.use_wandb or not self._is_main_process:
+            if not self.use_wandb or not self._is_main_process():
                 return
             
             import wandb
@@ -944,7 +944,7 @@ class TrainingMonitor:
     def _create_detailed_charts(self):
         """创建详细的训练和评估指标图表 - 优化版本，不记录初始数据"""
         try:
-            if not self.use_wandb or not self._is_main_process:
+            if not self.use_wandb or not self._is_main_process():
                 return
             
             # 移除初始数据记录，避免step=0的问题
@@ -957,7 +957,7 @@ class TrainingMonitor:
     def _ensure_eval_charts_visible(self):
         """确保eval图表在wandb界面中可见 - 优化版本，减少额外记录"""
         try:
-            if not self.use_wandb or not self._is_main_process:
+            if not self.use_wandb or not self._is_main_process():
                 return
             
             # 移除额外的chart_visibility_check记录，避免step冲突
@@ -1099,7 +1099,7 @@ class TrainingMonitor:
         
         # 🔥 修复：log_step方法只负责本地日志记录，WandB记录由trainer统一处理
         # 这样可以避免重复记录和step冲突问题
-        if self.use_wandb and self._is_main_process and not skip_wandb:
+        if self.use_wandb and self._is_main_process() and not skip_wandb:
             # 只记录基础信息到本地日志，WandB记录由trainer的_build_training_metrics处理
             pass
         
@@ -1121,7 +1121,7 @@ class TrainingMonitor:
         self.epoch_logs.append(log_entry)
         
         # 记录到wandb（仅主进程）
-        if self.use_wandb and self._is_main_process:
+        if self.use_wandb and self._is_main_process():
             log_data = {
                 "training/epoch_avg_loss": float(avg_loss),
                 "training/epoch_time": float(elapsed_time),
@@ -1138,7 +1138,7 @@ class TrainingMonitor:
     
     def log_evaluation(self, step: int, eval_loss: float, eval_accuracy: float, additional_metrics: dict = None):
         """记录评估结果 - 在eval组中显示指标"""
-        if self.use_wandb and self._is_main_process:
+        if self.use_wandb and self._is_main_process():
             try:
                 import wandb
                 if wandb.run is None:
