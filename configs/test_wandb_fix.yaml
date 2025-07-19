@@ -45,7 +45,7 @@ training:
   output_dir: "/mmu_mllm_hdd_2/madehua/model/qwen_classify/food172_ls_5e_6"
   logging_steps: 5000
   save_steps: 200
-  eval_steps: 20  # 🔥 修复：进一步降低eval频率，每20步评估一次
+  eval_steps: 10  # 🔥 修复：设置为10步，确保频繁评估
   save_hf_format: true
   save_deepspeed_format: false
   num_workers: 32

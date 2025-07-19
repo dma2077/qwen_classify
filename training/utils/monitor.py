@@ -745,7 +745,7 @@ class TrainingMonitor:
             return True
     
     def _init_wandb(self):
-        """初始化WandB - 改进版本，确保eval图表正确创建"""
+        """初始化WandB - 修复版本，移除可能干扰的初始数据点"""
         try:
             if not self.use_wandb or not self._is_main_process():
                 return
@@ -778,14 +778,11 @@ class TrainingMonitor:
             print(f"   🏃 运行名称: {run_name}")
             print(f"   🔗 URL: {wandb.run.url}")
             
-            # 定义指标
+            # 定义指标但不记录初始数据点
             self._define_eval_metrics()
             
-            # 🔥 新增：强制创建eval图表
-            self._force_create_eval_charts()
-            
-            # 记录初始数据点，确保图表能够显示
-            self._log_initial_data_points()
+            # 🔥 修复：不记录初始数据点，让真实数据自然出现
+            print("✅ WandB初始化完成，等待真实数据记录")
             
         except Exception as e:
             print(f"❌ WandB初始化失败: {e}")
@@ -1215,7 +1212,7 @@ class TrainingMonitor:
                 traceback.print_exc()
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
-        """通用的指标记录方法 - 确保所有指标正确记录到WandB"""
+        """通用的指标记录方法 - 修复版本，确保所有指标正确记录到WandB"""
         # 检查是否是主进程且wandb可用
         if not self.use_wandb or not self._is_main_process():
             return
@@ -1231,20 +1228,13 @@ class TrainingMonitor:
                 return
         except Exception as e:
             print(f"❌ 导入WandB失败: {e}")
-            print(f"   请确保已安装wandb: pip install wandb")
             import traceback
             traceback.print_exc()
             return
 
         try:
-            # 🔥 修复：简化step检查，只在明显倒退时阻止
-            if step is not None:
-                current_wandb_step = getattr(wandb.run, 'step', 0)
-                # 只在step明显倒退时阻止（相差超过10步）
-                if step < current_wandb_step - 10:
-                    print(f"⚠️  Step明显倒退: 当前WandB step={current_wandb_step}, 尝试记录step={step}")
-                    print(f"   跳过本次记录，避免step冲突")
-                    return
+            # 🔥 修复：移除step检查逻辑，允许所有step的数据记录
+            # WandB会自动处理step顺序，我们不应该人为阻止
             
             # 确保所有值都是可序列化的
             log_data = {}
@@ -1279,22 +1269,35 @@ class TrainingMonitor:
                     perf_metrics_count += 1
                     perf_metrics_list.append(key)
             
-            # 记录指标到WandB
+            # 🔥 修复：使用更可靠的记录方法
             if step is not None:
-                wandb.log(log_data, step=int(step), commit=commit)
-                step_info = f"step={step}"
+                # 确保step是正整数
+                actual_step = max(0, int(step))
+                wandb.log(log_data, step=actual_step, commit=commit)
+                step_info = f"step={actual_step}"
             else:
                 wandb.log(log_data, commit=commit)
                 step_info = "auto-step"
             
-            # 🔥 新增：强制同步到WandB云端
+            # 🔥 修复：改进同步策略
             if commit and wandb.run is not None:
                 try:
-                    # 强制同步数据到云端
-                    wandb.run.sync()
-                    print(f"🔄 已强制同步到WandB云端 ({step_info})")
+                    # 方法1：等待一小段时间让数据提交
+                    import time
+                    time.sleep(0.1)
+                    
+                    # 方法2：手动调用_sync_dir
+                    if hasattr(wandb.run, '_sync_dir'):
+                        wandb.run._sync_dir()
+                    
+                    # 方法3：调用传统sync方法（如果可用）
+                    if hasattr(wandb.run, 'sync'):
+                        wandb.run.sync()
+                    
+                    print(f"🔄 WandB数据已提交并同步 ({step_info})")
                 except Exception as sync_error:
-                    print(f"⚠️  强制同步失败: {sync_error}")
+                    print(f"⚠️ WandB同步操作失败: {sync_error}")
+                    # 同步失败不应该影响主流程
             
             # 输出记录信息（调试用）
             if self._is_main_process() and (training_metrics_count > 0 or eval_metrics_count > 0 or perf_metrics_count > 0):
@@ -1307,15 +1310,32 @@ class TrainingMonitor:
                 if perf_metrics_count > 0:
                     print(f"   ⚡ Perf指标: {perf_metrics_list}")
                 
-                # 🔥 新增：显示WandB状态信息
+                # 🔥 修复：显示更详细的WandB状态信息
                 try:
                     current_wandb_step = getattr(wandb.run, 'step', 0)
                     print(f"   🔍 WandB当前step: {current_wandb_step}")
                     print(f"   🔗 WandB URL: {wandb.run.url}")
                     print(f"   📊 WandB项目: {wandb.run.project}")
                     print(f"   🏃 WandB状态: {getattr(wandb.run, 'state', 'unknown')}")
+                    
+                    # 🔥 新增：验证数据是否真正记录
+                    try:
+                        history = wandb.run.history()
+                        if not history.empty:
+                            print(f"   ✅ WandB历史数据: {len(history)}行")
+                            if step is not None:
+                                step_data = history[history.index == actual_step] if hasattr(history, 'index') else None
+                                if step_data is not None and not step_data.empty:
+                                    print(f"   ✅ Step {actual_step} 数据已确认存在")
+                                else:
+                                    print(f"   ⚠️ Step {actual_step} 数据尚未在历史记录中找到")
+                        else:
+                            print(f"   ⚠️ WandB历史数据为空")
+                    except Exception as history_error:
+                        print(f"   ⚠️ 检查WandB历史数据失败: {history_error}")
+                        
                 except Exception as wandb_info_error:
-                    print(f"   ⚠️  获取WandB状态失败: {wandb_info_error}")
+                    print(f"   ⚠️ 获取WandB状态失败: {wandb_info_error}")
             
         except Exception as e:
             print(f"❌ 记录指标到WandB失败: {e}")
