@@ -362,7 +362,7 @@ def evaluate_single_dataset_fast(model, val_loader, device) -> Tuple[float, floa
     else:
         current_rank = 0
     
-    # 只在主进程显示进度条
+    # 🔥 优化：减少进度条更新频率，只在主进程显示
     show_progress = not is_distributed or current_rank == 0
     eval_pbar = tqdm(val_loader, desc="Evaluating", leave=False, disable=not show_progress)
     
@@ -400,8 +400,8 @@ def evaluate_single_dataset_fast(model, val_loader, device) -> Tuple[float, floa
                 correct += (predictions == labels).sum().item()
                 total += labels.size(0)
                 
-                # 减少进度条更新频率，只在关键步骤更新
-                if show_progress and (batch_idx % 50 == 0 or batch_idx == len(val_loader) - 1):
+                # 🔥 优化：大幅减少进度条更新频率，只在关键步骤更新
+                if show_progress and (batch_idx % 100 == 0 or batch_idx == len(val_loader) - 1):
                     current_accuracy = correct / total if total > 0 else 0
                     current_avg_loss = total_loss / batch_count
                     eval_pbar.set_postfix({
@@ -418,7 +418,7 @@ def evaluate_single_dataset_fast(model, val_loader, device) -> Tuple[float, floa
     # 关闭进度条
     eval_pbar.close()
     
-    # 在分布式环境下聚合结果 - 简化版本
+    # 🔥 优化：简化分布式聚合，减少通信开销
     if is_distributed:
         # 只进行一次聚合，避免多次all_reduce
         total_loss_tensor = torch.tensor(total_loss, dtype=torch.float32, device=device)

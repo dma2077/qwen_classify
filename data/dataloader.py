@@ -30,8 +30,9 @@ def create_dataloaders(config):
             # 如果是字典，直接使用
             deepspeed_config = config['deepspeed']
         
-        # 使用micro_batch_size_per_gpu作为DataLoader的batch_size
-        batch_size = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
+        # 训练时使用micro_batch_size_per_gpu，评估时使用train_batch_size
+        train_batch_size = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
+        eval_batch_size = deepspeed_config.get('train_batch_size', 1)
     else:
         batch_size = config['training'].get('batch_size', 8)
     
@@ -97,6 +98,14 @@ def create_dataloaders(config):
     is_main_process = not use_distributed or dist.get_rank() == 0
     
     if is_main_process:
+        # 打印批次大小配置信息
+        if 'deepspeed' in config:
+            print(f"📊 批次大小配置:")
+            print(f"  • 训练批次大小: {train_batch_size} (per GPU)")
+            print(f"  • 评估批次大小: {eval_batch_size} (total)")
+        else:
+            print(f"📊 批次大小配置: {batch_size}")
+        
         # 打印数据集配置信息
         if dataset_configs:
             print(f"📊 数据集配置:")
@@ -131,7 +140,7 @@ def create_dataloaders(config):
     # 创建训练数据加载器
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=train_batch_size if 'deepspeed' in config else batch_size,
         shuffle=shuffle_train,
         sampler=train_sampler,
         num_workers=num_workers,
@@ -143,7 +152,7 @@ def create_dataloaders(config):
     # 创建验证数据加载器
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=eval_batch_size if 'deepspeed' in config else batch_size,
         shuffle=shuffle_val,
         sampler=val_sampler,
         num_workers=num_workers,
@@ -194,7 +203,8 @@ def create_full_eval_dataloader(config, model_processor=None):
                 deepspeed_config = json.load(f)
         else:
             deepspeed_config = config['deepspeed']
-        batch_size = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
+        # 🔥 修复：评估时使用总的有效批次大小，而不是每个GPU的批次大小
+        batch_size = deepspeed_config.get('train_batch_size', 1)
     else:
         batch_size = config['training'].get('batch_size', 8)
     

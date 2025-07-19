@@ -1,0 +1,102 @@
+# 快速评估训练配置文件
+model:
+  pretrained_name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  num_labels: 101  # Food101数据集
+
+training:
+  num_epochs: 10
+  output_dir: "./outputs/fast_eval_training"
+  
+  # 🔥 性能优化配置
+  gradient_checkpointing: false         # 不启用梯度检查点，优先计算速度
+  memory_efficient_attention: true      # 启用FlashAttention
+  amp: false                           # 不启用AMP，DeepSpeed已启用bf16
+  dataloader_pin_memory: true          # 启用pin_memory
+  dataloader_num_workers: 16           # 数据加载器worker数量
+  dataloader_prefetch_factor: 2        # 预取因子
+  
+  # 学习率配置
+  learning_rate: 1e-5
+  weight_decay: 0.01
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  
+  # 批次配置
+  batch_size: 32                      # 🔥 增加训练批次大小
+  gradient_accumulation_steps: 2
+  
+  # 🔥 关键优化：减少评估频率
+  logging_steps: 10
+  eval_steps: 200                      # 从50增加到200，减少评估频率
+  save_steps: 500                      # 从200增加到500，减少保存频率
+  
+  # 最佳模型追踪
+  best_model_tracking:
+    enabled: true
+    metric: "overall_accuracy"
+    mode: "max"
+    save_best_only: true
+  
+  # 评估配置
+  evaluation:
+    partial_eval_during_training: true
+    full_eval_at_end: true
+    eval_best_model_only: true
+
+# 数据配置
+data:
+  train_jsonl: "data/food101/train.jsonl"
+  val_jsonl: "data/food101/val.jsonl"
+  max_length: 512
+  image_size: 224
+
+# 损失函数配置
+loss:
+  type: "cross_entropy"
+
+# 多数据集配置
+datasets:
+  dataset_configs:
+    food101:
+      num_classes: 101
+      eval_ratio: 0.05                 # 🔥 关键优化：从0.2降低到0.05，只使用5%的数据评估
+      description: "Food101 dataset"
+  enable_logits_masking: true
+  shuffle_datasets: true
+
+# WandB配置
+wandb:
+  enabled: true
+  project: "qwen-classification-fast-eval"
+  run_name: "fast_eval_training_run"
+  tags: ["fast-eval", "performance"]
+  notes: "Fast evaluation training with reduced eval frequency and data ratio"
+  log_dataset_metrics: true
+
+# 监控配置
+monitor:
+  use_wandb: true
+  freq:
+    training_log_freq: 10
+    eval_log_freq: 200                 # 与eval_steps保持一致
+    perf_log_freq: 20                  # 减少性能指标记录频率
+    gpu_log_freq: 50                   # 减少GPU监控频率
+    local_save_freq: 200               # 减少本地保存频率
+    progress_update_freq: 20           # 减少进度条更新频率
+  flops_profile_freq: 100              # 减少FLOPs分析频率
+
+# DeepSpeed配置
+deepspeed: "configs/ds_eval_optimized.json"
+
+# 优化器配置
+optimizer:
+  type: "AdamW"
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1e-8
+
+# 学习率调度器配置
+lr_scheduler:
+  type: "cosine"
+  warmup_steps: 100
+  num_training_steps: 1000  # 将在运行时自动计算 
