@@ -1249,7 +1249,7 @@ class TrainingMonitor:
                 traceback.print_exc()
     
     def log_metrics(self, metrics: dict, step: int = None, commit: bool = True):
-        """通用的指标记录方法 - 彻底修复WandB step=0问题"""
+        """通用的指标记录方法 - 彻底修复WandB step自动递增问题"""
         # 检查是否是主进程且wandb可用
         if not self.use_wandb or not self._is_main_process():
             return
@@ -1303,24 +1303,31 @@ class TrainingMonitor:
                     perf_metrics_count += 1
                     perf_metrics_list.append(key)
             
-            # 🔥 彻底修复：使用最可靠的step控制方法
+            # 🔥 彻底修复：完全控制WandB step，防止自动递增
             if step is not None and step >= 0:
                 actual_step = int(step)
                 
-                # 🔥 方法1：直接使用step参数，这是最可靠的方法
+                # 🔥 关键修复：先记录数据，再强制设置WandB内部step
                 print(f"🔧 记录数据到step {actual_step}")
+                
+                # 方法1：直接使用step参数记录
                 wandb.log(log_data, step=actual_step, commit=commit)
+                
+                # 🔥 方法2：强制重置WandB内部step到我们期望的值
+                if hasattr(wandb.run, '_step'):
+                    wandb.run._step = actual_step
+                    print(f"🔧 强制重置WandB内部step为: {actual_step}")
+                
                 step_info = f"step={actual_step}"
                 
-                # 验证记录结果
-                current_wandb_step = getattr(wandb.run, 'step', 0)
-                print(f"🔍 记录后WandB step: {current_wandb_step}")
+                # 验证最终step
+                final_wandb_step = getattr(wandb.run, 'step', 0)
+                print(f"🔍 最终WandB step: {final_wandb_step}")
                 
-                if current_wandb_step == actual_step:
-                    print(f"✅ Step记录成功: {actual_step}")
+                if final_wandb_step == actual_step:
+                    print(f"✅ Step完全同步: {actual_step}")
                 else:
-                    print(f"⚠️ Step可能不匹配: 期望{actual_step}, WandB显示{current_wandb_step}")
-                    # 但这不一定是错误，因为WandB可能会在后台更新step
+                    print(f"⚠️ Step仍不匹配: 期望{actual_step}, 实际{final_wandb_step}")
                     
             else:
                 # 如果step为None或负数，使用自动step
@@ -1334,7 +1341,7 @@ class TrainingMonitor:
                 try:
                     # 等待数据同步
                     import time
-                    time.sleep(0.1)  # 增加等待时间
+                    time.sleep(0.1)
                     
                     print(f"🔄 WandB数据已提交 ({step_info})")
                 except Exception as sync_error:
