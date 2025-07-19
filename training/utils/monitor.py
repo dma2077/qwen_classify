@@ -184,10 +184,17 @@ def _measure_flops_with_profiler(model, batch_size: int, seq_length: int) -> flo
                     total_flops = 0
                     flops_events = 0
                     
-                    for event in events:
-                        if hasattr(event, 'flops') and event.flops > 0:
-                            total_flops += event.flops
-                            flops_events += 1
+                    # 🔥 修复：安全地迭代events，避免TypeError
+                    try:
+                        events_list = list(events)  # 确保events是可迭代的
+                        for event in events_list:
+                            if hasattr(event, 'flops') and event.flops > 0:
+                                total_flops += event.flops
+                                flops_events += 1
+                    except (TypeError, AttributeError) as iter_error:
+                        print(f"⚠️  迭代events失败: {iter_error}")
+                        print("🔧 使用估算方法")
+                        return _estimate_flops_fallback(model, dummy_batch, seq_length)
                     
                     if total_flops > 0:
                         print(f"✅ 成功获取FLOPs: {total_flops:.2e} (来自 {flops_events} 个事件)")
@@ -313,9 +320,15 @@ def _profile_forward_flops(model, batch_example: Dict) -> float:
             try:
                 events = prof.events()
                 if events is not None and len(events) > 0:
-                    for event in events:
-                        if hasattr(event, 'flops') and event.flops > 0:
-                            flops += event.flops
+                    # 🔥 修复：安全地迭代events，避免TypeError
+                    try:
+                        events_list = list(events)  # 确保events是可迭代的
+                        for event in events_list:
+                            if hasattr(event, 'flops') and event.flops > 0:
+                                flops += event.flops
+                    except (TypeError, AttributeError) as iter_error:
+                        print(f"⚠️  迭代前向传播events失败: {iter_error}")
+                        return 0.0
                     
                     if flops > 0:
                         print(f"✅ 前向传播FLOPs: {flops:.2e}")
@@ -370,9 +383,15 @@ def _profile_backward_flops(model, batch_example: Dict) -> float:
             try:
                 events = prof.events()
                 if events is not None and len(events) > 0:
-                    for event in events:
-                        if hasattr(event, 'flops') and event.flops > 0:
-                            flops += event.flops
+                    # 🔥 修复：安全地迭代events，避免TypeError
+                    try:
+                        events_list = list(events)  # 确保events是可迭代的
+                        for event in events_list:
+                            if hasattr(event, 'flops') and event.flops > 0:
+                                flops += event.flops
+                    except (TypeError, AttributeError) as iter_error:
+                        print(f"⚠️  迭代反向传播events失败: {iter_error}")
+                        return 0.0
                     
                     if flops > 0:
                         print(f"✅ 反向传播FLOPs: {flops:.2e}")
