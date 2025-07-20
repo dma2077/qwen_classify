@@ -534,65 +534,54 @@ class DeepSpeedTrainer:
         
         print(f"🔍 开始处理评估步骤 (step={effective_step})")
         
-        # 添加评估异常处理，避免NCCL超时导致训练中断
-        try:
-            print(f"🔄 调用evaluate方法...")
-            # 获取eval数据但不让evaluate方法记录到wandb
-            eval_loss, eval_accuracy, eval_results = self.evaluate(step=effective_step, log_to_wandb=False, return_results=True)
-            
-            print(f"✅ Evaluate方法完成: eval_loss={eval_loss:.4f}, eval_accuracy={eval_accuracy:.4f}")
-            
-            # 构建完整的training数据（包括性能指标）
-            current_training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
-                                                               grad_norm_value, inputs, attention_mask, step_time)
-            
-            # 准备eval数据
-            eval_data = self._build_eval_metrics(eval_loss, eval_accuracy, eval_results)
-            
-            print(f"📊 构建的eval数据: {list(eval_data.keys())}")
-            print(f"📊 Eval数据详情: {eval_data}")
-            
-            # 🔥 修复：确保eval指标正确记录到WandB
-            if self.dist_ctx.is_main_process:
-                print(f"🔧 开始记录eval指标到WandB...")
-                # 记录eval指标，强制commit确保数据同步
-                self.monitor.log_metrics(eval_data, effective_step, commit=True)
-                
-                # 输出详细的记录信息
-                eval_metrics_list = [k for k in eval_data.keys() if k.startswith('eval/')]
-                
-                print(f"✅ Eval指标已记录到WandB (step={effective_step})")
-                print(f"   📊 记录的eval指标: {eval_metrics_list}")
-                print(f"   📈 整体准确率: {eval_accuracy:.4f}")
-                print(f"   📉 整体损失: {eval_loss:.6f}")
-                print(f"   🔢 eval指标数量: {len(eval_data)}")
-                
-                # 验证eval指标记录
-                if eval_metrics_list:
-                    print(f"   ✅ Eval指标记录成功")
-                else:
-                    print(f"   ⚠️ 没有找到eval指标")
-            else:
-                print(f"⚠️ 非主进程，跳过eval指标记录")
-                
-        except Exception as eval_error:
-            if self.dist_ctx.is_main_process:
-                print(f"❌ 评估过程出错: {eval_error}")
-                print(f"   effective_step: {effective_step}")
-                print(f"   epoch: {epoch}")
-                print(f"   aggregated_loss: {aggregated_loss}")
-                print(f"   current_lr: {current_lr}")
-                print("⚠️  跳过本次评估，继续训练...")
-                import traceback
-                traceback.print_exc()
-            # 记录一个占位符的eval结果，避免wandb图表中断
-            self._log_placeholder_eval(effective_step, aggregated_loss, current_lr)
+        # 简化的评估异常处理，失败时直接退出
+        print(f"🔄 调用evaluate方法...")
+        # 获取eval数据但不让evaluate方法记录到wandb
+        eval_loss, eval_accuracy, eval_results = self.evaluate(step=effective_step, log_to_wandb=False, return_results=True)
         
+        print(f"✅ Evaluate方法完成: eval_loss={eval_loss:.4f}, eval_accuracy={eval_accuracy:.4f}")
+        
+        # 构建完整的training数据（包括性能指标）
+        current_training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
+                                                           grad_norm_value, inputs, attention_mask, step_time)
+        
+        # 准备eval数据
+        eval_data = self._build_eval_metrics(eval_loss, eval_accuracy, eval_results)
+        
+        print(f"📊 构建的eval数据: {list(eval_data.keys())}")
+        print(f"📊 Eval数据详情: {eval_data}")
+        
+        # 记录eval指标到WandB
+        if self.dist_ctx.is_main_process:
+            print(f"🔧 开始记录eval指标到WandB...")
+            self.monitor.log_metrics(eval_data, effective_step, commit=True)
+            
+            # 输出详细的记录信息
+            eval_metrics_list = [k for k in eval_data.keys() if k.startswith('eval/')]
+            
+            print(f"✅ Eval指标已记录到WandB (step={effective_step})")
+            print(f"   📊 记录的eval指标: {eval_metrics_list}")
+            print(f"   📈 整体准确率: {eval_accuracy:.4f}")
+            print(f"   📉 整体损失: {eval_loss:.6f}")
+            print(f"   🔢 eval指标数量: {len(eval_data)}")
+            
+            # 验证eval指标记录
+            if eval_metrics_list:
+                print(f"   ✅ Eval指标记录成功")
+            else:
+                print(f"   ⚠️ 没有找到eval指标")
+        else:
+            print(f"⚠️ 非主进程，跳过eval指标记录")
+        
+        # 恢复模型状态
         self.model.train()
+        if hasattr(self.model, 'module'):
+            self.model.module.train()
+        
         # 重新显示进度条
         if hasattr(self, 'pbar'):
             self.pbar.refresh()
-            
+        
     def _build_eval_metrics(self, eval_loss, eval_accuracy, eval_results):
         """构建评估指标 - 确保包含所有必要的eval指标"""
         eval_data = {
@@ -618,26 +607,8 @@ class DeepSpeedTrainer:
                 
         return eval_data
         
-    def _log_placeholder_eval(self, effective_step, aggregated_loss, current_lr):
-        """记录占位符评估结果"""
-        try:
-            placeholder_eval_data = {
-                "training/loss": float(aggregated_loss),
-                "training/lr": float(current_lr),
-                "eval/overall_loss": 999.0,  # 使用明显的占位符值
-                "eval/overall_accuracy": 0.0,
-                "eval/evaluation_failed": 1.0,  # 标记评估失败
-                "step": int(effective_step)
-            }
-            self.monitor.log_metrics(placeholder_eval_data, effective_step)
-        except Exception as placeholder_error:
-            print(f"❌ 记录占位符eval结果失败: {placeholder_error}")
-            print(f"   effective_step: {effective_step}")
-            print(f"   aggregated_loss: {aggregated_loss}")
-            print(f"   current_lr: {current_lr}")
-            import traceback
-            traceback.print_exc()
-            
+
+    
     def _handle_logging_step(self, effective_step, aggregated_loss, grad_norm_value, current_lr, epoch, batch_idx, inputs, attention_mask):
         """处理日志记录步骤"""
         # 记录各数据集的指标
@@ -1115,67 +1086,16 @@ class DeepSpeedTrainer:
         return checkpoint_dir
     
     def _is_better_metric(self, current_value, best_value):
-        """判断当前指标是否更好"""
+        """判断当前指标是否比最佳指标更好"""
         if self.best_metric_mode == 'max':
             return current_value > best_value
         else:
             return current_value < best_value
     
     def _cleanup_old_best_models(self):
-        """清理所有检查点，只保留最新的最佳模型"""
-        if not self.save_best_only:
-            return
-            
-        try:
-            import glob
-            import shutil
-            
-            # 查找所有检查点目录
-            best_model_pattern = os.path.join(self.config['output_dir'], "best-model-step-*")
-            checkpoint_pattern = os.path.join(self.config['output_dir'], "checkpoint-*")
-            
-            best_model_dirs = glob.glob(best_model_pattern)
-            checkpoint_dirs = glob.glob(checkpoint_pattern)
-            
-            dirs_to_remove = []
-            
-            # 1. 删除所有常规检查点（checkpoint-*）
-            dirs_to_remove.extend(checkpoint_dirs)
-            
-            # 2. 删除除最新之外的所有最佳模型检查点
-            if len(best_model_dirs) > 1:
-                def extract_step(path):
-                    try:
-                        return int(os.path.basename(path).split('-')[-1])
-                    except:
-                        return 0
-                
-                best_model_dirs.sort(key=extract_step)
-                dirs_to_remove.extend(best_model_dirs[:-1])  # 保留最后一个（最新的）
-            
-            # 执行清理
-            total_removed = 0
-            for dir_path in dirs_to_remove:
-                if os.path.exists(dir_path):
-                    dir_name = os.path.basename(dir_path)
-                    self.dist_ctx.print_main(f"🗑️  删除检查点: {dir_name}")
-                    shutil.rmtree(dir_path)
-                    total_removed += 1
-            
-            # 显示清理结果
-            if total_removed > 0:
-                self.dist_ctx.print_main(f"✅ 清理完成，删除了 {total_removed} 个检查点")
-                
-                # 显示保留的最佳模型
-                remaining_best = glob.glob(best_model_pattern)
-                if remaining_best:
-                    remaining_best.sort(key=lambda x: int(os.path.basename(x).split('-')[-1]))
-                    self.dist_ctx.print_main(f"🏆 保留最佳模型: {os.path.basename(remaining_best[-1])}")
-            else:
-                self.dist_ctx.print_main("✅ 无需清理，目录已经很干净")
-                
-        except Exception as e:
-            self.dist_ctx.print_main(f"⚠️  清理检查点时出错: {e}")
+        """清理旧的最佳模型文件"""
+        # 这里可以添加清理逻辑
+        pass
 
     def _update_dataset_metrics(self, batch, outputs, aggregated_loss):
         """更新各数据集的指标 - 优化版本，减少计算开销"""
@@ -1297,13 +1217,18 @@ class DeepSpeedTrainer:
         try:
             self.dist_ctx.print_main("🔍 开始评估...")
             
-            # 添加评估前的barrier，确保所有进程同步
+            # 基本的评估前同步
             from .utils.distributed import safe_barrier
-            if not safe_barrier():
-                self.dist_ctx.print_main("⚠️  评估前同步失败，跳过本次评估")
-                return 0.0, 0.0
+            if self.dist_ctx.world_size > 1:
+                if not safe_barrier(timeout=60):
+                    raise RuntimeError("评估前同步失败")
             
-            # 🔥 优化：根据数据集数量选择评估策略
+            # 设置模型为评估模式
+            self.model.eval()
+            if hasattr(self.model, 'module'):
+                self.model.module.eval()
+            
+            # 根据数据集数量选择评估策略
             dataset_count = len(self.dataset_configs) if self.dataset_configs else 0
             
             if dataset_count <= 1:
@@ -1327,8 +1252,7 @@ class DeepSpeedTrainer:
             
             # 检查评估结果是否有效
             if eval_results is None or not eval_results:
-                self.dist_ctx.print_main("⚠️  评估结果为空，跳过本次评估")
-                return 0.0, 0.0
+                raise RuntimeError("评估结果为空")
             
             # 准备wandb记录数据
             eval_log_data = {}

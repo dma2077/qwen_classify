@@ -49,16 +49,47 @@ def safe_all_reduce(tensor, op=dist.ReduceOp.SUM):
 
 def safe_barrier(timeout=300):
     """
-    简化的barrier操作
+    改进的barrier操作，添加更好的超时和错误处理
     """
     if not (dist.is_available() and dist.is_initialized()):
         return True
     
     try:
-        dist.barrier()
-        return True
+        # 🔥 改进：使用更智能的barrier策略
+        import threading
+        import time
+        
+        # 创建一个标志来跟踪barrier是否完成
+        barrier_completed = threading.Event()
+        barrier_error = None
+        
+        def barrier_worker():
+            nonlocal barrier_error
+            try:
+                dist.barrier()
+                barrier_completed.set()
+            except Exception as e:
+                barrier_error = e
+                barrier_completed.set()
+        
+        # 在单独线程中执行barrier
+        worker_thread = threading.Thread(target=barrier_worker)
+        worker_thread.daemon = True
+        worker_thread.start()
+        
+        # 等待barrier完成或超时
+        if barrier_completed.wait(timeout=timeout):
+            if barrier_error is None:
+                return True
+            else:
+                print(f"❌ barrier操作失败: {barrier_error}")
+                return False
+        else:
+            print(f"❌ barrier操作超时 ({timeout}秒)")
+            return False
+            
     except Exception as e:
-        print(f"❌ barrier操作失败: {e}")
+        print(f"❌ barrier操作异常: {e}")
         return False
 
 def batch_all_reduce(tensors, op=dist.ReduceOp.SUM):
@@ -80,15 +111,37 @@ def batch_all_reduce(tensors, op=dist.ReduceOp.SUM):
         return False
 
 def setup_nccl_timeout_env():
-    """设置基础的NCCL超时环境变量"""
+    """设置NCCL环境变量以提高稳定性"""
     
-    # 设置合理的超时时间（10分钟），现在不需要30分钟了
-    if 'NCCL_TIMEOUT' not in os.environ:
-        os.environ['NCCL_TIMEOUT'] = '600'  # 10分钟超时
+    # 🔥 改进：设置更全面的NCCL配置
+    nccl_configs = {
+        # 基础超时设置
+        'NCCL_TIMEOUT': '300',  # 5分钟超时，从10分钟减少
+        'NCCL_ASYNC_ERROR_HANDLING': '1',  # 启用异步错误处理
+        
+        # 🔥 新增：连接稳定性设置
+        'NCCL_SOCKET_TIMEOUT': '30000',  # 30秒socket超时
+        'NCCL_CONNECT_TIMEOUT': '30000',  # 30秒连接超时
+        'NCCL_HEARTBEAT_TIMEOUT': '30000',  # 30秒心跳超时
+        
+        # 🔥 新增：网络重试设置
+        'NCCL_RETRY_COUNT': '3',  # 重试3次
+        'NCCL_RETRY_TIMEOUT': '10000',  # 重试超时10秒
+        
+        # 🔥 新增：评估时的特殊设置
+        'NCCL_BUFFSIZE': '8388608',  # 8MB缓冲区，减少内存使用
+        'NCCL_NTHREADS': '16',  # 减少线程数
+        
+        # 🔥 新增：调试和稳定性
+        'NCCL_DEBUG': 'WARN',  # 只显示警告和错误
+        'NCCL_IB_DISABLE': '1',  # 禁用InfiniBand，使用TCP
+        'NCCL_P2P_DISABLE': '1',  # 禁用P2P，提高稳定性
+    }
     
-    # 启用异步错误处理
-    if 'NCCL_ASYNC_ERROR_HANDLING' not in os.environ:
-        os.environ['NCCL_ASYNC_ERROR_HANDLING'] = '1'
+    # 只设置尚未设置的环境变量
+    for key, value in nccl_configs.items():
+        if key not in os.environ:
+            os.environ[key] = value
     
     # 静默设置，不输出信息
     pass 
