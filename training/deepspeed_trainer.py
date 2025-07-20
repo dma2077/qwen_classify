@@ -20,8 +20,12 @@ class DeepSpeedTrainer:
         # 假设配置已经通过prepare_config处理过
         self.config = config
         
-        # 🔥 修复：设置端口配置，避免端口冲突
+        # 🔥 修复：强制设置NCCL_NTHREADS，必须在DeepSpeed初始化前设置
         import os
+        os.environ['NCCL_NTHREADS'] = '64'  # 强制设置为64（32的倍数）
+        print(f"🔧 强制设置 NCCL_NTHREADS={os.environ['NCCL_NTHREADS']}")
+        
+        # 🔥 修复：设置端口配置，避免端口冲突
         if 'MASTER_PORT' not in os.environ:
             os.environ['MASTER_PORT'] = '29501'  # 使用29501端口，避免29500冲突
         if 'MASTER_ADDR' not in os.environ:

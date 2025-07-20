@@ -181,12 +181,16 @@ def main():
     """主函数"""
     args = parse_args()
     
+    # 🔥 修复：最早设置NCCL环境变量，避免警告
+    import os
+    os.environ['NCCL_NTHREADS'] = '64'  # 强制设置为64（32的倍数）
+    print(f"🔧 在main()中强制设置 NCCL_NTHREADS={os.environ['NCCL_NTHREADS']}")
+    
     # 设置随机种子
     set_random_seeds(42)
     
     # 初始化分布式环境 (DeepSpeed会处理这个)
     # 🔥 修复：设置端口配置，避免端口冲突
-    import os
     if 'MASTER_PORT' not in os.environ:
         os.environ['MASTER_PORT'] = '29501'  # 使用29501端口，避免29500冲突
     if 'MASTER_ADDR' not in os.environ:

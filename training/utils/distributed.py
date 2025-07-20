@@ -128,9 +128,9 @@ def setup_nccl_timeout_env():
         'NCCL_RETRY_COUNT': '3',  # 重试3次
         'NCCL_RETRY_TIMEOUT': '10000',  # 重试超时10秒
         
-        # 🔥 新增：评估时的特殊设置
+        # 🔥 修复：评估时的特殊设置
         'NCCL_BUFFSIZE': '8388608',  # 8MB缓冲区，减少内存使用
-        'NCCL_NTHREADS': '16',  # 减少线程数
+        'NCCL_NTHREADS': '64',  # 必须是32的倍数，修复警告
         
         # 🔥 新增：调试和稳定性
         'NCCL_DEBUG': 'WARN',  # 只显示警告和错误
@@ -138,10 +138,14 @@ def setup_nccl_timeout_env():
         'NCCL_P2P_DISABLE': '1',  # 禁用P2P，提高稳定性
     }
     
-    # 只设置尚未设置的环境变量
+    # 设置环境变量，对于NCCL_NTHREADS强制覆盖
     for key, value in nccl_configs.items():
-        if key not in os.environ:
+        if key == 'NCCL_NTHREADS':
+            # 强制设置NCCL_NTHREADS为64，修复警告
+            os.environ[key] = value
+        elif key not in os.environ:
             os.environ[key] = value
     
-    # 静默设置，不输出信息
-    pass 
+    # 输出关键设置用于调试
+    if 'NCCL_NTHREADS' in nccl_configs:
+        print(f"✅ 已设置 NCCL_NTHREADS={os.environ.get('NCCL_NTHREADS')}") 

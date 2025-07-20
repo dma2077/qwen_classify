@@ -19,6 +19,10 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 export MASTER_PORT=29501  # 使用29501端口，避免29500冲突
 export MASTER_ADDR=localhost
 
+# 🔥 修复NCCL警告：设置NCCL_NTHREADS为32的倍数
+export NCCL_NTHREADS=64
+echo "🔧 设置 NCCL_NTHREADS=$NCCL_NTHREADS"
+
 # 启动多GPU分布式训练
 echo "🔥 启动多GPU分布式训练..."
 echo "📊 使用端口: $MASTER_PORT"

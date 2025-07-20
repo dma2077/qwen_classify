@@ -17,6 +17,10 @@ from pathlib import Path
 os.environ["FLASH_ATTENTION_FORCE_ENABLE"] = "1"
 os.environ["FLASH_ATTENTION_2"] = "1"
 
+# 🔥 修复：强制设置NCCL_NTHREADS，避免警告
+os.environ['NCCL_NTHREADS'] = '64'  # 强制设置为64（32的倍数）
+print(f"🔧 在complete_train.py中强制设置 NCCL_NTHREADS={os.environ['NCCL_NTHREADS']}")
+
 # 添加项目根目录到Python路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
