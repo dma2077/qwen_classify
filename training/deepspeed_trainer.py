@@ -12,6 +12,9 @@ from .utils.evaluation import evaluate_multi_dataset
 from .utils.monitor import TrainingMonitor, make_json_serializable
 from data.dataloader import create_full_eval_dataloader
 
+# 新增导入
+from .utils.flops_calculate import MFUStats
+
 class DeepSpeedTrainer:
     def __init__(self, config):
         # 假设配置已经通过prepare_config处理过
@@ -89,6 +92,9 @@ class DeepSpeedTrainer:
         
         # 缓存MFU计算结果，避免重复计算
         self._mfu_cache = {}
+        
+        # 新增：初始化MFU统计器，替换Profiler-based的MFU计算
+        self.mfu_stats = None  # 延迟初始化，等获取到模型配置路径后再初始化
         
         # 🔥 新增：性能监控
         self.performance_stats = {
@@ -268,58 +274,104 @@ class DeepSpeedTrainer:
         if hasattr(self.train_loader, 'prefetch_factor'):
             self.train_loader.prefetch_factor = 2
         
-    def _calculate_mfu(self, effective_step, inputs, attention_mask, step_time):
-        """计算MFU（Model FLOPs Utilization）"""
-        # 检查必要条件
-        if self.monitor.model_ref is None:
+    def _init_mfu_stats(self):
+        """初始化MFU统计器"""
+        if self.mfu_stats is not None:
+            return True
+            
+        try:
+            # 创建args对象，包含MFU计算所需的参数
+            import argparse
+            args = argparse.Namespace()
+            args.logging_per_step = self.config.get('logging_steps', 20)
+            
+            # 智能查找模型配置文件
+            config_path = None
+            possible_model_dirs = [
+                self.config.get('model', {}).get('model_path', ''),
+                self.config.get('model', {}).get('model_name_or_path', ''),
+                self.config.get('output_dir', './output'),
+                './models',
+                './checkpoints',
+                '.'
+            ]
+            
+            # 过滤空路径
+            possible_model_dirs = [path for path in possible_model_dirs if path]
+            
+            for model_dir in possible_model_dirs:
+                if os.path.exists(model_dir):
+                    test_config_path = os.path.join(model_dir, "config.json")
+                    if os.path.exists(test_config_path):
+                        config_path = test_config_path
+                        args.model_dir = model_dir
+                        break
+            
+            if config_path is None:
+                if self.dist_ctx.is_main_process:
+                    print(f"⚠️ 未找到模型配置文件 config.json")
+                    print("📁 搜索路径:")
+                    for path in possible_model_dirs:
+                        if os.path.exists(path):
+                            try:
+                                files = os.listdir(path)
+                                print(f"  - {path}: {files[:5]}{'...' if len(files) > 5 else ''}")
+                            except:
+                                print(f"  - {path}: 无法访问")
+                        else:
+                            print(f"  - {path}: 不存在")
+                return False
+            
+            self.mfu_stats = MFUStats(args)
             if self.dist_ctx.is_main_process:
-                print(f"⚠️ MFU计算失败: model_ref为None")
-            return None
+                print(f"✅ MFU统计器初始化成功，使用配置: {config_path}")
+            return True
             
-        if attention_mask is None:
+        except Exception as e:
             if self.dist_ctx.is_main_process:
-                print(f"⚠️ MFU计算失败: attention_mask为None")
-            return None
+                print(f"❌ MFU统计器初始化失败: {e}")
+                import traceback
+                traceback.print_exc()
+            return False
+    
+    def _collect_mfu_data(self, batch, inputs, attention_mask):
+        """收集MFU计算所需的数据"""
+        try:
+            # 计算图像token数量
+            num_image_tokens = 0
+            if "pixel_values" in batch and batch["pixel_values"] is not None:
+                # 估算图像token数量，根据具体模型可能需要调整
+                pixel_values = batch["pixel_values"]
+                if pixel_values.dim() >= 3:
+                    # 假设每张图像产生固定数量的token，这里使用常见的配置
+                    # 可以根据实际模型配置调整
+                    batch_size = pixel_values.size(0)
+                    # 一般VLM模型每张图像产生256-1024个token
+                    tokens_per_image = 256  # 这个值可以根据实际模型调整
+                    num_image_tokens = batch_size * tokens_per_image
             
-        if self.monitor.actual_flops is None:
+            # 获取文本token数量
+            num_tokens = attention_mask.sum().item() if attention_mask is not None else inputs.numel()
+            
+            # 样本数量
+            num_samples = inputs.size(0)
+            
+            # 图像数量
+            num_images = batch.get("num_images", 0)
+            if num_images == 0 and "pixel_values" in batch and batch["pixel_values"] is not None:
+                num_images = batch["pixel_values"].size(0)
+            
+            # 调用MFU统计器的set方法
+            self.mfu_stats.set(
+                num_image_tokens=num_image_tokens,
+                num_tokens=num_tokens,
+                num_samples=num_samples,
+                num_images=num_images
+            )
+            
+        except Exception as e:
             if self.dist_ctx.is_main_process:
-                print(f"⚠️ MFU计算失败: actual_flops为None")
-            return None
-            
-        if step_time <= 0:
-            if self.dist_ctx.is_main_process:
-                print(f"⚠️ MFU计算失败: step_time={step_time} <= 0")
-            return None
-            
-        # 创建缓存键
-        cache_key = f"{effective_step}_{inputs.size(0)}_{attention_mask.size(1)}"
-        if cache_key in self._mfu_cache:
-            return self._mfu_cache[cache_key]
-            
-        from .utils.monitor import calculate_mfu_with_profiler, get_gpu_peak_flops
-        current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
-        actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-        
-        # 计算MFU
-        if effective_step % self.monitor.flops_profile_freq == 0:
-            # 使用profiler计算MFU（更精确）
-            current_mfu = calculate_mfu_with_profiler(self.monitor.model_ref, actual_batch_size, current_seq_length, step_time)
-            if self.dist_ctx.is_main_process:
-                print(f"🔍 使用profiler计算MFU (step={effective_step}): {current_mfu:.4f}")
-        else:
-            # 使用估算的MFU（基于实际FLOPs）
-            actual_flops_per_second = self.monitor.actual_flops / step_time
-            peak_flops_per_second = get_gpu_peak_flops()
-            current_mfu = actual_flops_per_second / peak_flops_per_second
-            current_mfu = min(current_mfu, 1.0)  # 限制在100%以内
-            
-            if self.dist_ctx.is_main_process:
-                print(f"📊 估算MFU (step={effective_step}): {current_mfu:.4f} "
-                      f"(actual_flops={self.monitor.actual_flops:.2e}, step_time={step_time:.3f}s)")
-            
-        # 缓存结果
-        self._mfu_cache[cache_key] = current_mfu
-        return current_mfu
+                print(f"⚠️ 收集MFU数据失败: {e}")
         
     def _build_training_metrics(self, effective_step, epoch, aggregated_loss, current_lr, grad_norm_value, 
                                inputs, attention_mask, step_time):
@@ -341,27 +393,71 @@ class DeepSpeedTrainer:
                     "perf/step_time": float(step_time),
                     "perf/steps_per_second": float(1.0 / step_time),
                 })
-                                
-                # 添加MFU相关指标
-                current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, step_time)
-                if current_mfu is not None:
-                    current_seq_length = self.monitor._calculate_actual_seq_length(attention_mask)
-                    actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-                    
-                    training_data.update({
-                        "perf/mfu": float(current_mfu),
-                        "perf/mfu_percent": float(current_mfu * 100),
-                        "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
-                        "perf/samples_per_second": float(actual_batch_size / step_time),
-                        "perf/actual_flops": float(self.monitor.actual_flops),
-                        "perf/actual_seq_length": float(current_seq_length),
-                        "perf/flops_per_second": float(self.monitor.actual_flops / step_time),
-                    })
+                
+                # 使用新的MFU计算方式
+                if self.mfu_stats is not None:
+                    try:
+                        # 检查是否有足够的数据进行MFU计算
+                        tokens_for_mfu = self.mfu_stats.tokens_for_mfu
+                        has_sufficient_data = (
+                            tokens_for_mfu["num_tokens"] > 0 and 
+                            tokens_for_mfu["num_samples"] > 0 and
+                            effective_step >= self.mfu_stats.args.logging_per_step
+                        )
+                        
+                        if not has_sufficient_data:
+                            if self.dist_ctx.is_main_process and effective_step % 50 == 0:
+                                print(f"🔄 MFU数据收集中 (step={effective_step}): "
+                                      f"tokens={tokens_for_mfu['num_tokens']}, "
+                                      f"samples={tokens_for_mfu['num_samples']}, "
+                                      f"images={tokens_for_mfu['num_images']}")
+                            return training_data
+                        
+                        # 获取MFU日志数据
+                        mfu_log_dict = self.mfu_stats.mfu(step_time, effective_step)
+                        
+                        # 调试：检查MFU数据的完整性
+                        if self.dist_ctx.is_main_process and effective_step % 50 == 0:
+                            print(f"🔍 MFU原始数据 (step={effective_step}):")
+                            for key, value in mfu_log_dict.items():
+                                print(f"  {key}: {value}")
+                        
+                        # 确保所有MFU指标都是有效的数值
+                        valid_mfu_data = {}
+                        for key, value in mfu_log_dict.items():
+                            if isinstance(value, (int, float)) and not (isinstance(value, float) and (value != value or value == float('inf') or value == float('-inf'))):
+                                valid_mfu_data[key] = float(value)
+                            else:
+                                if self.dist_ctx.is_main_process:
+                                    print(f"⚠️ 跳过无效MFU指标: {key}={value}")
+                        
+                        training_data.update(valid_mfu_data)
+                        
+                        # 添加额外的性能指标
+                        current_seq_length = attention_mask.sum(dim=1).float().mean().item() if attention_mask is not None else 0
+                        actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
+                        
+                        training_data.update({
+                            "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
+                            "perf/samples_per_second": float(actual_batch_size / step_time),
+                            "perf/actual_seq_length": float(current_seq_length),
+                            "perf/actual_batch_size": float(actual_batch_size),
+                        })
+                        
+                        if self.dist_ctx.is_main_process and effective_step % 100 == 0:
+                            print(f"📊 MFU指标摘要 (step={effective_step}): "
+                                  f"MFU={valid_mfu_data.get('perf/mfu_per_step_per_gpu', 0):.4f}, "
+                                  f"VIT_FLOPs={valid_mfu_data.get('perf/vit_flops_per_step_per_gpu', 0):.2f}T, "
+                                  f"LLM_FLOPs={valid_mfu_data.get('perf/llm_flops_per_step_per_gpu', 0):.2f}T")
+                                  
+                    except Exception as mfu_error:
+                        if self.dist_ctx.is_main_process:
+                            print(f"⚠️ MFU计算失败 (step={effective_step}): {mfu_error}")
+                            import traceback
+                            traceback.print_exc()
                 else:
-                    # 如果MFU计算失败，记录原因
-                    if self.dist_ctx.is_main_process:
-                        print(f"⚠️ MFU计算失败 (step={effective_step}): model_ref={self.monitor.model_ref is not None}, "
-                              f"attention_mask={attention_mask is not None}, actual_flops={self.monitor.actual_flops is not None}")
+                    if self.dist_ctx.is_main_process and effective_step % 100 == 0:
+                        print(f"⚠️ MFU统计器未初始化 (step={effective_step})")
             else:
                 # 如果步骤时间为0或负数，记录警告
                 if self.dist_ctx.is_main_process:
@@ -370,6 +466,14 @@ class DeepSpeedTrainer:
             # 调试信息：为什么跳过性能指标
             if effective_step % 100 == 0:  # 每100步输出一次
                 print(f"⏭️  跳过性能指标记录 (step={effective_step}): 频率检查 {effective_step} % 20 != 0")
+                
+        # 验证MFU指标是否包含在training_data中
+        if self.dist_ctx.is_main_process and effective_step % 100 == 0:
+            mfu_metrics = [k for k in training_data.keys() if 'mfu' in k.lower() or 'flops' in k.lower()]
+            if mfu_metrics:
+                print(f"✅ MFU指标将记录到WandB (step={effective_step}): {mfu_metrics}")
+            else:
+                print(f"⚠️ 未找到MFU指标 (step={effective_step})")
                 
         return training_data
         
@@ -632,6 +736,10 @@ class DeepSpeedTrainer:
             if self.enable_dataset_metrics and (self.current_step % 10 == 0):
                 self._update_dataset_metrics(batch, outputs, aggregated_loss)
             
+            # 收集MFU统计数据
+            if self.mfu_stats is not None:
+                self._collect_mfu_data(batch, inputs, attention_mask)
+            
             # 🔥 新增：优化器时间监控
             optimizer_start = time.time()
             grad_norm = self.model.get_global_grad_norm()
@@ -792,6 +900,24 @@ class DeepSpeedTrainer:
                 self.dist_ctx.print_main("⚠️ MFU计算将被禁用")
                 import traceback
                 traceback.print_exc()
+        
+        # 🔥 新增：初始化MFU统计器
+        self.dist_ctx.print_main("🔧 初始化MFU统计器...")
+        mfu_init_success = self._init_mfu_stats()
+        
+        # 在分布式环境中同步初始化状态
+        if hasattr(self.dist_ctx, 'world_size') and self.dist_ctx.world_size > 1:
+            import torch.distributed as dist
+            # 广播初始化状态
+            if dist.is_initialized():
+                success_tensor = torch.tensor([1 if mfu_init_success else 0], dtype=torch.int, device=torch.cuda.current_device())
+                dist.broadcast(success_tensor, src=0)
+                mfu_init_success = bool(success_tensor.item())
+        
+        if mfu_init_success:
+            self.dist_ctx.print_main("✅ MFU统计器初始化成功")
+        else:
+            self.dist_ctx.print_main("❌ MFU统计器初始化失败，将使用传统方法")
         
         # 创建进度条（基于有效训练步数）
         self.pbar = tqdm(total=stats['total_effective_steps'], desc="Training Steps", disable=not self.dist_ctx.is_main_process)
