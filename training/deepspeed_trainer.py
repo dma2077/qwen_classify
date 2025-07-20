@@ -12,7 +12,7 @@ from .utils.evaluation import evaluate_multi_dataset
 from .utils.monitor import TrainingMonitor, make_json_serializable
 from data.dataloader import create_full_eval_dataloader
 
-# 新增导入
+# 使用新的MFU计算方式
 from .utils.flops_calculate import MFUStats
 
 class DeepSpeedTrainer:
@@ -48,25 +48,18 @@ class DeepSpeedTrainer:
             from training.utils.monitor import DummyMonitor  
             self.monitor = DummyMonitor(self.config['output_dir'], config)
         
-        self.model = None
-        self.train_loader = None
-        self.val_loader = None
-        self.optimizer = None
-        self.lr_scheduler = None
+        # 训练状态追踪
         self.current_step = 0
         self.current_epoch = 0
+        self.best_metric = None
+        self.best_step = None
         
         # 多数据集支持
         self.dataset_configs = self.config.get('datasets', {}).get('dataset_configs', {})
         self.enable_dataset_metrics = self.config.get('wandb', {}).get('log_dataset_metrics', True)
         
-        # 用于跟踪各数据集的指标
-        self.dataset_metrics = defaultdict(lambda: {
-            'total_loss': 0.0,
-            'total_samples': 0,
-            'correct_samples': 0,
-            'step_count': 0
-        })
+        # 数据集指标
+        self.dataset_metrics = defaultdict(lambda: {'loss': [], 'samples': 0, 'correct': 0})
         
         # 最佳模型追踪
         self.best_model_config = self.config.get('training', {}).get('best_model_tracking', {})
@@ -85,15 +78,12 @@ class DeepSpeedTrainer:
         self.best_model_path = None
         
         # 评估配置
-        self.eval_config = self.config.get('training', {}).get('evaluation', {})
+        self.eval_config = config.get('training', {}).get('evaluation', {})
         self.partial_eval_during_training = self.eval_config.get('partial_eval_during_training', True)
         self.full_eval_at_end = self.eval_config.get('full_eval_at_end', True)
         self.eval_best_model_only = self.eval_config.get('eval_best_model_only', True)
         
-        # 缓存MFU计算结果，避免重复计算
-        self._mfu_cache = {}
-        
-        # 新增：初始化MFU统计器，替换Profiler-based的MFU计算
+        # 🔥 新增：初始化MFU统计器，使用新的MFUStats
         self.mfu_stats = None  # 延迟初始化，等获取到模型配置路径后再初始化
         
         # 🔥 新增：性能监控
@@ -142,9 +132,6 @@ class DeepSpeedTrainer:
         
         if self.dist_ctx.is_main_process:
             print(f"✅ 模型初始化完成")
-        
-        # 设置monitor的model引用用于MFU计算
-        self.monitor.set_model_ref(self.model)
         
     def _apply_memory_optimizations(self):
         """应用内存优化设置"""
@@ -275,7 +262,7 @@ class DeepSpeedTrainer:
             self.train_loader.prefetch_factor = 2
         
     def _init_mfu_stats(self):
-        """初始化MFU统计器"""
+        """初始化MFU统计器 - 修复config.json路径获取"""
         if self.mfu_stats is not None:
             return True
             
@@ -285,41 +272,94 @@ class DeepSpeedTrainer:
             args = argparse.Namespace()
             args.logging_per_step = self.config.get('logging_steps', 20)
             
-            # 智能查找模型配置文件
+            # 🔥 修复：从model.pretrained_name获取正确的配置路径
+            pretrained_name = self.config.get('model', {}).get('pretrained_name', '')
+            
             config_path = None
-            possible_model_dirs = [
-                self.config.get('model', {}).get('model_path', ''),
-                self.config.get('model', {}).get('model_name_or_path', ''),
-                self.config.get('output_dir', './output'),
-                './models',
-                './checkpoints',
-                '.'
-            ]
             
-            # 过滤空路径
-            possible_model_dirs = [path for path in possible_model_dirs if path]
-            
-            for model_dir in possible_model_dirs:
-                if os.path.exists(model_dir):
-                    test_config_path = os.path.join(model_dir, "config.json")
-                    if os.path.exists(test_config_path):
-                        config_path = test_config_path
-                        args.model_dir = model_dir
-                        break
+            # 检查是否是本地路径（包含'/'或以'./'开头）
+            if '/' in pretrained_name or pretrained_name.startswith('./'):
+                # 本地路径，直接检查该目录下的config.json
+                test_config_path = os.path.join(pretrained_name, "config.json")
+                if os.path.exists(test_config_path):
+                    config_path = test_config_path
+                    args.model_dir = pretrained_name
+                    if self.dist_ctx.is_main_process:
+                        print(f"📁 使用本地模型配置: {config_path}")
+                else:
+                    if self.dist_ctx.is_main_process:
+                        print(f"⚠️ 本地路径 {pretrained_name} 下未找到config.json")
+            else:
+                # Hugging Face模型名，尝试从缓存中找
+                # 首先尝试从transformers缓存中获取
+                try:
+                    from transformers import AutoConfig
+                    # 这会触发下载并返回配置对象
+                    temp_config = AutoConfig.from_pretrained(pretrained_name)
+                    
+                    # 尝试找到实际的缓存路径
+                    import transformers
+                    cache_dir = getattr(transformers.utils.hub, 'default_cache_path', None)
+                    if cache_dir is None:
+                        cache_dir = os.path.expanduser("~/.cache/huggingface/transformers")
+                    
+                    # 在缓存目录中搜索config.json
+                    import glob
+                    possible_paths = glob.glob(os.path.join(cache_dir, "**", "config.json"), recursive=True)
+                    
+                    # 查找包含模型名或相关信息的路径
+                    for path in possible_paths:
+                        try:
+                            with open(path, 'r') as f:
+                                test_config = json.load(f)
+                            # 检查是否是我们要找的模型配置
+                            if (test_config.get('model_type') == temp_config.model_type and 
+                                test_config.get('architectures') == temp_config.architectures):
+                                config_path = path
+                                args.model_dir = os.path.dirname(path)
+                                if self.dist_ctx.is_main_process:
+                                    print(f"📁 找到Hugging Face缓存配置: {config_path}")
+                                break
+                        except:
+                            continue
+                    
+                    # 如果没找到缓存文件，创建临时配置文件
+                    if config_path is None:
+                        temp_dir = os.path.join(self.config.get('output_dir', './'), 'temp_model_config')
+                        os.makedirs(temp_dir, exist_ok=True)
+                        temp_config_path = os.path.join(temp_dir, 'config.json')
+                        
+                        # 保存配置到临时文件
+                        temp_config.save_pretrained(temp_dir)
+                        
+                        if os.path.exists(temp_config_path):
+                            config_path = temp_config_path
+                            args.model_dir = temp_dir
+                            if self.dist_ctx.is_main_process:
+                                print(f"📁 创建临时配置文件: {config_path}")
+                        
+                except Exception as hf_error:
+                    if self.dist_ctx.is_main_process:
+                        print(f"⚠️ 获取Hugging Face配置失败: {hf_error}")
             
             if config_path is None:
                 if self.dist_ctx.is_main_process:
-                    print(f"⚠️ 未找到模型配置文件 config.json")
-                    print("📁 搜索路径:")
-                    for path in possible_model_dirs:
-                        if os.path.exists(path):
-                            try:
-                                files = os.listdir(path)
-                                print(f"  - {path}: {files[:5]}{'...' if len(files) > 5 else ''}")
-                            except:
-                                print(f"  - {path}: 无法访问")
-                        else:
-                            print(f"  - {path}: 不存在")
+                    print(f"❌ 未找到模型配置文件 config.json")
+                    print(f"   模型路径: {pretrained_name}")
+                    print(f"   请确保路径正确或网络连接正常")
+                return False
+            
+            # 验证config.json文件内容
+            try:
+                with open(config_path, 'r') as f:
+                    config_data = json.load(f)
+                    if 'model_type' not in config_data:
+                        if self.dist_ctx.is_main_process:
+                            print(f"⚠️ 配置文件缺少model_type字段: {config_path}")
+                        return False
+            except Exception as config_error:
+                if self.dist_ctx.is_main_process:
+                    print(f"❌ 配置文件格式错误: {config_error}")
                 return False
             
             self.mfu_stats = MFUStats(args)
@@ -336,6 +376,9 @@ class DeepSpeedTrainer:
     
     def _collect_mfu_data(self, batch, inputs, attention_mask):
         """收集MFU计算所需的数据"""
+        if self.mfu_stats is None:
+            return
+            
         try:
             # 计算图像token数量
             num_image_tokens = 0
@@ -394,7 +437,7 @@ class DeepSpeedTrainer:
                     "perf/steps_per_second": float(1.0 / step_time),
                 })
                 
-                # 使用新的MFU计算方式
+                # 🔥 使用新的MFU统计器计算MFU
                 if self.mfu_stats is not None:
                     try:
                         # 检查是否有足够的数据进行MFU计算
@@ -707,7 +750,7 @@ class DeepSpeedTrainer:
             if self.enable_dataset_metrics and (self.current_step % 10 == 0):
                 self._update_dataset_metrics(batch, outputs, aggregated_loss)
             
-            # 收集MFU统计数据
+            # 🔥 收集MFU统计数据
             if self.mfu_stats is not None:
                 self._collect_mfu_data(batch, inputs, attention_mask)
             
@@ -845,34 +888,7 @@ class DeepSpeedTrainer:
         # 打印训练配置信息
         self._print_training_config(stats)
         
-        # 🔥 初始化FLOPs profiling，确保MFU能够正确记录
-        if self.dist_ctx.is_main_process:
-            self.dist_ctx.print_main("🔍 初始化FLOPs profiling...")
-            try:
-                # 获取第一个batch进行FLOPs profiling
-                first_batch = next(iter(self.train_loader))
-                forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(first_batch)
-                
-                # 进行FLOPs profiling
-                batch_example = {
-                    "input_ids": inputs,
-                    "attention_mask": attention_mask,
-                    "pixel_values": forward_kwargs.get("pixel_values"),
-                    "labels": labels
-                }
-                
-                self.monitor.profile_model_flops(batch_example)
-                self.dist_ctx.print_main("✅ FLOPs profiling完成，MFU计算已启用")
-                
-            except Exception as flops_error:
-                self.dist_ctx.print_main(f"❌ FLOPs profiling失败: {flops_error}")
-                self.dist_ctx.print_main(f"   first_batch类型: {type(first_batch)}")
-                self.dist_ctx.print_main(f"   batch_example: {batch_example}")
-                self.dist_ctx.print_main("⚠️ MFU计算将被禁用")
-                import traceback
-                traceback.print_exc()
-        
-        # 🔥 新增：初始化MFU统计器
+        # 🔥 初始化MFU统计器，不使用FLOPs profiling
         self.dist_ctx.print_main("🔧 初始化MFU统计器...")
         mfu_init_success = self._init_mfu_stats()
         
@@ -1132,13 +1148,12 @@ class DeepSpeedTrainer:
                 
             # 简化指标更新，减少重复计算
             metrics = self.dataset_metrics[dataset_name]
-            metrics['total_loss'] += avg_loss_per_sample
-            metrics['total_samples'] += 1
-            metrics['step_count'] += 1
+            metrics['total_loss'].append(avg_loss_per_sample)
+            metrics['samples'] += 1
             
             # 只在需要时进行tensor转换
             if predictions[i].item() == labels[i].item():
-                metrics['correct_samples'] += 1
+                metrics['correct'] += 1
     
     def _log_dataset_metrics(self, step, is_eval=False):
         """记录各数据集的指标 - 优化版本，减少WandB记录频率"""
@@ -1159,26 +1174,26 @@ class DeepSpeedTrainer:
         metric_group = "eval" if is_eval else "training"
         
         for dataset_name, metrics in self.dataset_metrics.items():
-            if metrics['total_samples'] == 0:
+            if metrics['samples'] == 0:
                 continue
                 
-            avg_loss = metrics['total_loss'] / metrics['step_count'] if metrics['step_count'] > 0 else 0
-            accuracy = metrics['correct_samples'] / metrics['total_samples']
+            avg_loss = sum(metrics['total_loss']) / metrics['samples'] if metrics['total_loss'] else 0
+            accuracy = metrics['correct'] / metrics['samples']
             
             dataset_log_data[f"{metric_group}/{dataset_name}_loss"] = avg_loss
             dataset_log_data[f"{metric_group}/{dataset_name}_accuracy"] = accuracy
-            dataset_log_data[f"{metric_group}/{dataset_name}_samples"] = metrics['total_samples']
+            dataset_log_data[f"{metric_group}/{dataset_name}_samples"] = metrics['samples']
             
             # 累计整体指标
-            overall_samples += metrics['total_samples']
-            overall_correct += metrics['correct_samples']
+            overall_samples += metrics['samples']
+            overall_correct += metrics['correct']
             
             # 只在主进程输出详细信息（降低输出频率）
             if self.dist_ctx.is_main_process and (step % 500 == 0):  # 每500步输出一次
                 prefix = "EVAL" if is_eval else "TRAIN"
                 print(f"📊 {prefix} - {dataset_name}: "
                       f"Loss={avg_loss:.4f}, Acc={accuracy:.4f} ({accuracy*100:.2f}%), "
-                      f"Samples={metrics['total_samples']}")
+                      f"Samples={metrics['samples']}")
         
         # 添加整体指标
         if overall_samples > 0:
