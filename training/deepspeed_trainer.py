@@ -431,8 +431,8 @@ class DeepSpeedTrainer:
             "step": int(effective_step)
         }
         
-        # 🔥 优化：降低性能指标记录频率，减少开销
-        should_log_perf = (effective_step % 50 == 0)  # 每20步记录一次性能指标
+        # 🔥 大幅降低性能指标记录频率，减少开销
+        should_log_perf = (effective_step % 100 == 0)  # 每100步记录一次性能指标
         
         if should_log_perf:
             if step_time > 0:
@@ -536,8 +536,8 @@ class DeepSpeedTrainer:
         
         # 🔥 修复：确保所有步骤都记录training和perf指标到WandB
         if self.dist_ctx.is_main_process:
-            # 检查是否需要记录training指标
-            should_log_training = (effective_step % self.monitor.freq['training_log_freq'] == 0)
+            # 减少training指标记录频率
+            should_log_training = (effective_step % (self.monitor.freq['training_log_freq'] * 2) == 0)
             
             if should_log_training:
                 training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
@@ -546,21 +546,7 @@ class DeepSpeedTrainer:
                 # 🔥 修复：简化记录逻辑，每个step都记录并commit
                 self.monitor.log_metrics(training_data, effective_step, commit=True)
                 
-                # 添加调试输出
-                training_metrics_list = [k for k in training_data.keys() if k.startswith('training/')]
-                perf_metrics_list = [k for k in training_data.keys() if k.startswith('perf/')]
-                if training_metrics_list or perf_metrics_list:
-                    print(f"📊 Training指标已记录 (step={effective_step}): "
-                          f"training={len(training_metrics_list)}, perf={len(perf_metrics_list)}")
-                    if training_metrics_list:
-                        print(f"   📈 Training指标: {training_metrics_list}")
-                    if perf_metrics_list:
-                        print(f"   ⚡ Perf指标: {perf_metrics_list}")
-            else:
-                # 调试输出：显示为什么跳过记录
-                if effective_step % 100 == 0:  # 每100步输出一次，避免日志过多
-                    print(f"⏭️  跳过training指标记录 (step={effective_step}): "
-                          f"频率={self.monitor.freq['training_log_freq']}")
+                # 移除调试输出，减少开销
                 
     def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
         """更新进度条"""
@@ -731,9 +717,9 @@ class DeepSpeedTrainer:
         self.current_epoch = epoch
         self.model.train()
         
-        # 🔥 新增：优化数据加载器
-        if epoch == 0:  # 只在第一个epoch优化
-            self._optimize_dataloader()
+        # 暂时禁用数据加载器优化，避免性能问题
+        # if epoch == 0:
+        #     self._optimize_dataloader()
         
         # 为分布式采样器设置epoch（确保每个epoch的shuffle正确）
         if hasattr(self.train_loader.sampler, 'set_epoch'):
@@ -743,14 +729,8 @@ class DeepSpeedTrainer:
         epoch_start_time = time.time()
         effective_step = epoch * stats['effective_steps_per_epoch']
         
-        # 🔥 新增：性能监控
-        epoch_performance = {
-            'forward_time': 0.0,
-            'backward_time': 0.0,
-            'optimizer_time': 0.0,
-            'data_loading_time': 0.0,
-            'memory_usage': []
-        }
+        # 简化性能监控
+        epoch_performance = {}
         
         # 简化输出
         
@@ -763,23 +743,17 @@ class DeepSpeedTrainer:
                 batch_start_time = time.time()
                 self.current_step += 1
                 
-                # 🔥 轻量级：数据加载时间监控
-                data_loading_time = time.time() - batch_start_time
-                epoch_performance['data_loading_time'] += data_loading_time
+                # 移除数据加载时间监控，减少开销
                 
                 # 准备批次数据
                 forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(batch)
                 
-                # 🔥 新增：前向传播时间监控
-                forward_start = time.time()
+                # 移除时间监控，恢复原始性能
                 outputs = self.model(**forward_kwargs)
                 loss = outputs.loss
-                epoch_performance['forward_time'] += time.time() - forward_start
                 
-                # 🔥 新增：反向传播时间监控
-                backward_start = time.time()
+                # 反向传播
                 self.model.backward(loss)
-                epoch_performance['backward_time'] += time.time() - backward_start
                 
                 # 聚合多卡loss（在分布式训练中）
                 aggregated_loss = self._aggregate_loss(loss)
@@ -789,15 +763,13 @@ class DeepSpeedTrainer:
                 if self.enable_dataset_metrics and (self.current_step % 10 == 0):
                     self._update_dataset_metrics(batch, outputs, aggregated_loss)
                 
-                # 🔥 优化：减少MFU数据收集频率
-                if self.mfu_stats is not None and self.current_step % 5 == 0:  # 每5步收集一次
+                # 🔥 大幅减少MFU数据收集频率
+                if self.mfu_stats is not None and self.current_step % 20 == 0:  # 每20步收集一次
                     self._collect_mfu_data(batch, inputs, attention_mask)
                 
-                # 🔥 新增：优化器时间监控
-                optimizer_start = time.time()
+                # 优化器步骤
                 grad_norm = self.model.get_global_grad_norm()
                 self.model.step()
-                epoch_performance['optimizer_time'] += time.time() - optimizer_start
                 
                 # 处理梯度范数
                 grad_norm_value = self._process_grad_norm(grad_norm)
@@ -840,14 +812,9 @@ class DeepSpeedTrainer:
                     if effective_step > 0 and effective_step % self.config['save_steps'] == 0:
                         self._handle_save_step(effective_step)
                 
-                # 🔥 优化：减少内存清理和监控频率
-                if batch_idx % 500 == 0 and torch.cuda.is_available():
+                # 大幅减少内存操作
+                if batch_idx % 1000 == 0 and torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    
-                # 🔥 优化：减少内存监控频率
-                if batch_idx % 100 == 0 and torch.cuda.is_available():
-                    memory_allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
-                    epoch_performance['memory_usage'].append(memory_allocated)
                     
         except Exception as e:
             self.dist_ctx.print_main(f"❌ 训练循环异常: {e}")
@@ -862,8 +829,7 @@ class DeepSpeedTrainer:
         avg_loss = epoch_loss / len(self.train_loader)
         self.monitor.log_epoch(epoch, avg_loss, epoch_time, effective_step)
         
-        # 🔥 新增：记录性能统计
-        self._log_performance_stats(epoch, epoch_performance, epoch_time)
+        # 简化性能记录
         
         # 输出epoch统计信息
         epoch_message = (
