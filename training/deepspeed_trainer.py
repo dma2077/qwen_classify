@@ -13,7 +13,8 @@ from .utils.monitor import TrainingMonitor, make_json_serializable
 from data.dataloader import create_full_eval_dataloader
 
 # 使用新的MFU计算方式
-from .utils.flops_calculate import MFUStats
+# 🔥 禁用MFU相关import以提升性能
+# from .utils.flops_calculate import MFUStats
 
 class DeepSpeedTrainer:
     def __init__(self, config):
@@ -366,7 +367,8 @@ class DeepSpeedTrainer:
                     print(f"❌ 配置文件格式错误: {config_error}")
                 return False
             
-            self.mfu_stats = MFUStats(args)
+            # self.mfu_stats = MFUStats(args)
+            pass  # 禁用MFU统计器
             if self.dist_ctx.is_main_process:
                 print(f"✅ MFU统计器初始化成功，使用配置: {config_path}")
             return True
@@ -441,70 +443,70 @@ class DeepSpeedTrainer:
                     "perf/steps_per_second": float(1.0 / step_time),
                 })
                 
-                # 🔥 使用新的MFU统计器计算MFU
-                if self.mfu_stats is not None:
-                    try:
-                        # 检查是否有足够的数据进行MFU计算
-                        tokens_for_mfu = self.mfu_stats.tokens_for_mfu
-                        has_sufficient_data = (
-                            tokens_for_mfu["num_tokens"] > 0 and 
-                            tokens_for_mfu["num_samples"] > 0 and
-                            effective_step >= self.mfu_stats.args.logging_per_step
-                        )
-                        
-                        if not has_sufficient_data:
-                            if self.dist_ctx.is_main_process and effective_step % 50 == 0:
-                                print(f"🔄 MFU数据收集中 (step={effective_step}): "
-                                      f"tokens={tokens_for_mfu['num_tokens']}, "
-                                      f"samples={tokens_for_mfu['num_samples']}, "
-                                      f"images={tokens_for_mfu['num_images']}")
-                            return training_data
-                        
-                        # 获取MFU日志数据
-                        mfu_log_dict = self.mfu_stats.mfu(step_time, effective_step)
-                        
-                        # 调试：检查MFU数据的完整性
-                        if self.dist_ctx.is_main_process and effective_step % 50 == 0:
-                            print(f"🔍 MFU原始数据 (step={effective_step}):")
-                            for key, value in mfu_log_dict.items():
-                                print(f"  {key}: {value}")
-                        
-                        # 确保所有MFU指标都是有效的数值
-                        valid_mfu_data = {}
-                        for key, value in mfu_log_dict.items():
-                            if isinstance(value, (int, float)) and not (isinstance(value, float) and (value != value or value == float('inf') or value == float('-inf'))):
-                                valid_mfu_data[key] = float(value)
-                            else:
-                                if self.dist_ctx.is_main_process:
-                                    print(f"⚠️ 跳过无效MFU指标: {key}={value}")
-                        
-                        training_data.update(valid_mfu_data)
-                        
-                        # 添加额外的性能指标
-                        current_seq_length = attention_mask.sum(dim=1).float().mean().item() if attention_mask is not None else 0
-                        actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
-                        
-                        training_data.update({
-                            "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
-                            "perf/samples_per_second": float(actual_batch_size / step_time),
-                            "perf/actual_seq_length": float(current_seq_length),
-                            "perf/actual_batch_size": float(actual_batch_size),
-                        })
-                        
-                        if self.dist_ctx.is_main_process and effective_step % 100 == 0:
-                            print(f"📊 MFU指标摘要 (step={effective_step}): "
-                                  f"MFU={valid_mfu_data.get('perf/mfu_per_step_per_gpu', 0):.4f}, "
-                                  f"VIT_FLOPs={valid_mfu_data.get('perf/vit_flops_per_step_per_gpu', 0):.2f}T, "
-                                  f"LLM_FLOPs={valid_mfu_data.get('perf/llm_flops_per_step_per_gpu', 0):.2f}T")
-                                  
-                    except Exception as mfu_error:
-                        if self.dist_ctx.is_main_process:
-                            print(f"⚠️ MFU计算失败 (step={effective_step}): {mfu_error}")
-                            import traceback
-                            traceback.print_exc()
-                else:
-                    if self.dist_ctx.is_main_process and effective_step % 100 == 0:
-                        print(f"⚠️ MFU统计器未初始化 (step={effective_step})")
+                # 🔥 完全禁用MFU计算以提升性能
+                # if self.mfu_stats is not None:
+                #     try:
+                #         # 检查是否有足够的数据进行MFU计算
+                #         tokens_for_mfu = self.mfu_stats.tokens_for_mfu
+                #         has_sufficient_data = (
+                #             tokens_for_mfu["num_tokens"] > 0 and 
+                #             tokens_for_mfu["num_samples"] > 0 and
+                #             effective_step >= self.mfu_stats.args.logging_per_step
+                #         )
+                #         
+                #         if not has_sufficient_data:
+                #             if self.dist_ctx.is_main_process and effective_step % 50 == 0:
+                #                 print(f"🔄 MFU数据收集中 (step={effective_step}): "
+                #                       f"tokens={tokens_for_mfu['num_tokens']}, "
+                #                       f"samples={tokens_for_mfu['num_samples']}, "
+                #                       f"images={tokens_for_mfu['num_images']}")
+                #             return training_data
+                #         
+                #         # 获取MFU日志数据
+                #         mfu_log_dict = self.mfu_stats.mfu(step_time, effective_step)
+                #         
+                #         # 调试：检查MFU数据的完整性
+                #         if self.dist_ctx.is_main_process and effective_step % 50 == 0:
+                #             print(f"🔍 MFU原始数据 (step={effective_step}):")
+                #             for key, value in mfu_log_dict.items():
+                #                 print(f"  {key}: {value}")
+                #         
+                #         # 确保所有MFU指标都是有效的数值
+                #         valid_mfu_data = {}
+                #         for key, value in mfu_log_dict.items():
+                #             if isinstance(value, (int, float)) and not (isinstance(value, float) and (value != value or value == float('inf') or value == float('-inf'))):
+                #                 valid_mfu_data[key] = float(value)
+                #             else:
+                #                 if self.dist_ctx.is_main_process:
+                #                     print(f"⚠️ 跳过无效MFU指标: {key}={value}")
+                #         
+                #         training_data.update(valid_mfu_data)
+                #         
+                #         # 添加额外的性能指标
+                #         current_seq_length = attention_mask.sum(dim=1).float().mean().item() if attention_mask is not None else 0
+                #         actual_batch_size = inputs.size(0) * self.dist_ctx.world_size
+                #         
+                #         training_data.update({
+                #             "perf/tokens_per_second": float(actual_batch_size * current_seq_length / step_time),
+                #             "perf/samples_per_second": float(actual_batch_size / step_time),
+                #             "perf/actual_seq_length": float(current_seq_length),
+                #             "perf/actual_batch_size": float(actual_batch_size),
+                #         })
+                #         
+                #         if self.dist_ctx.is_main_process and effective_step % 100 == 0:
+                #             print(f"📊 MFU指标摘要 (step={effective_step}): "
+                #                   f"MFU={valid_mfu_data.get('perf/mfu_per_step_per_gpu', 0):.4f}, "
+                #                   f"VIT_FLOPs={valid_mfu_data.get('perf/vit_flops_per_step_per_gpu', 0):.2f}T, "
+                #                   f"LLM_FLOPs={valid_mfu_data.get('perf/llm_flops_per_step_per_gpu', 0):.2f}T")
+                #                   
+                #     except Exception as mfu_error:
+                #         if self.dist_ctx.is_main_process:
+                #             print(f"⚠️ MFU计算失败 (step={effective_step}): {mfu_error}")
+                #             import traceback
+                #             traceback.print_exc()
+                # else:
+                #     if self.dist_ctx.is_main_process and effective_step % 100 == 0:
+                #         print(f"⚠️ MFU统计器未初始化 (step={effective_step})")
             else:
                 # 如果步骤时间为0或负数，记录警告
                 if self.dist_ctx.is_main_process:
@@ -514,13 +516,13 @@ class DeepSpeedTrainer:
             if effective_step % 100 == 0:  # 每100步输出一次
                 print(f"⏭️  跳过性能指标记录 (step={effective_step}): 频率检查 {effective_step} % 20 != 0")
                 
-        # 验证MFU指标是否包含在training_data中
-        if self.dist_ctx.is_main_process and effective_step % 100 == 0:
-            mfu_metrics = [k for k in training_data.keys() if 'mfu' in k.lower() or 'flops' in k.lower()]
-            if mfu_metrics:
-                print(f"✅ MFU指标将记录到WandB (step={effective_step}): {mfu_metrics}")
-            else:
-                print(f"⚠️ 未找到MFU指标 (step={effective_step})")
+        # 🔥 完全禁用MFU/FLOPs指标验证
+        # if self.dist_ctx.is_main_process and effective_step % 100 == 0:
+        #     mfu_metrics = [k for k in training_data.keys() if 'mfu' in k.lower() or 'flops' in k.lower()]
+        #     if mfu_metrics:
+        #         print(f"✅ MFU指标将记录到WandB (step={effective_step}): {mfu_metrics}")
+        #     else:
+        #         print(f"⚠️ 未找到MFU指标 (step={effective_step})")
                 
         return training_data
         
@@ -681,17 +683,17 @@ class DeepSpeedTrainer:
             f"Epoch: {epoch + batch_idx/len(self.train_loader):.2f}"
         )
         
-        # 如果进行了实时FLOPs测量，添加MFU信息
-        if hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
-            current_time = time.time()
-            step_start_time = getattr(self.monitor, 'step_start_time', None)
-            if step_start_time is not None:
-                actual_step_time = current_time - step_start_time
-                
-                current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, actual_step_time)
-                if current_mfu is not None:
-                    log_message += f" | MFU: {current_mfu:.1%}"
-                    log_message += " [📊实时测量]"
+        # 🔥 禁用实时MFU测量以提升性能
+        # if hasattr(self.monitor, 'actual_flops') and self.monitor.actual_flops:
+        #     current_time = time.time()
+        #     step_start_time = getattr(self.monitor, 'step_start_time', None)
+        #     if step_start_time is not None:
+        #         actual_step_time = current_time - step_start_time
+        #         
+        #         current_mfu = self._calculate_mfu(effective_step, inputs, attention_mask, actual_step_time)
+        #         if current_mfu is not None:
+        #             log_message += f" | MFU: {current_mfu:.1%}"
+        #             log_message += " [📊实时测量]"
         
         # 打印日志信息
         if self.dist_ctx.is_main_process and hasattr(self, 'pbar'):
@@ -901,9 +903,10 @@ class DeepSpeedTrainer:
         # 打印训练配置信息
         self._print_training_config(stats)
         
-        # 🔥 初始化MFU统计器，不使用FLOPs profiling
-        self.dist_ctx.print_main("🔧 初始化MFU统计器...")
-        mfu_init_success = self._init_mfu_stats()
+        # 🔥 完全禁用MFU统计器以提升性能
+        # self.dist_ctx.print_main("🔧 初始化MFU统计器...")
+        # mfu_init_success = self._init_mfu_stats()
+        mfu_init_success = True  # 假设成功，跳过MFU计算
         
         # 在分布式环境中同步初始化状态
         if hasattr(self.dist_ctx, 'world_size') and self.dist_ctx.world_size > 1:

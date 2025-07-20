@@ -670,17 +670,20 @@ class TrainingMonitor:
             'eval_log_freq': freq_config.get('eval_log_freq', 1),                    # 评估指标记录频率
         }
         
-        # flops_profile_freq配置 - 优先从配置文件读取，如果没有则使用构造函数传入的值或默认值
-        config_flops_profile_freq = freq_config.get('flops_profile_freq')
-        if config_flops_profile_freq is not None:
-            # 配置文件中有设置，使用配置文件的值
-            self.flops_profile_freq = config_flops_profile_freq
-        elif self.flops_profile_freq is not None:
-            # 构造函数传入了值，保持不变
-            pass
-        else:
-            # 都没有设置，使用默认值
-            self.flops_profile_freq = 500
+        # 🔥 完全禁用FLOPs profiling以提升性能
+        # config_flops_profile_freq = freq_config.get('flops_profile_freq')
+        # if config_flops_profile_freq is not None:
+        #     # 配置文件中有设置，使用配置文件的值
+        #     self.flops_profile_freq = config_flops_profile_freq
+        # elif self.flops_profile_freq is not None:
+        #     # 构造函数传入了值，保持不变
+        #     pass
+        # else:
+        #     # 都没有设置，使用默认值
+        #     self.flops_profile_freq = 500
+        
+        # 强制禁用FLOPs profiling
+        self.flops_profile_freq = None
         
         # 只在主进程输出关键监控配置
         if self._is_main_process():
@@ -1047,28 +1050,32 @@ class TrainingMonitor:
             print(f"⚠️  确保eval图表可见性失败: {e}")
     
     def profile_model_flops(self, batch_example: Dict):
-        """测量模型的实际FLOPs"""
-        if self.model_ref is None:
-            print("模型引用未设置，无法测量FLOPs")
-            return
+        """🔥 禁用FLOPs测量以提升性能"""
+        # if self.model_ref is None:
+        #     print("模型引用未设置，无法测量FLOPs")
+        #     return
+        # 
+        # print("正在测量模型实际FLOPs...")
+        # self.actual_flops = profile_model_flops(self.model_ref, batch_example)
+        # 
+        # # 同时获取实际序列长度
+        # try:
+        #     self.actual_seq_length = _get_actual_sequence_length(self.model_ref, batch_example)
+        #     print(f"✅ 实际序列长度: {self.actual_seq_length}")
+        # except Exception as e:
+        #     print(f"❌ 获取序列长度失败: {e}")
+        # 
+        # if self.actual_flops > 0:
+        #     print(f"✅ 模型实际FLOPs: {self.actual_flops:.2e}")
         
-        print("正在测量模型实际FLOPs...")
-        self.actual_flops = profile_model_flops(self.model_ref, batch_example)
+        # 强制禁用FLOPs测量
+        self.actual_flops = 0
+        print("🔥 FLOPs测量已禁用以提升性能")
         
-        # 同时获取实际序列长度
-        try:
-            self.actual_seq_length = _get_actual_sequence_length(self.model_ref, batch_example)
-            print(f"✅ 实际序列长度: {self.actual_seq_length}")
-        except Exception as e:
-            print(f"❌ 获取序列长度失败: {e}")
-        
-        if self.actual_flops > 0:
-            print(f"✅ 模型实际FLOPs: {self.actual_flops:.2e}")
-            
-            # 显示MFU计算相关信息
-            self._show_mfu_calculation_info()
-        else:
-            print("❌ FLOPs测量失败，MFU计算将被禁用")
+        # # 显示MFU计算相关信息
+        # self._show_mfu_calculation_info()
+        # else:
+        #     print("❌ FLOPs测量失败，MFU计算将被禁用")
     
     def _show_mfu_calculation_info(self):
         """显示MFU计算的详细信息"""
@@ -1287,6 +1294,10 @@ class TrainingMonitor:
             for key, value in metrics.items():
                 # 跳过step字段，避免重复
                 if key == "step":
+                    continue
+                
+                # 🔥 过滤掉所有MFU/FLOPs相关的指标
+                if 'mfu' in key.lower() or 'flops' in key.lower():
                     continue
                     
                 # 处理不同类型的值
