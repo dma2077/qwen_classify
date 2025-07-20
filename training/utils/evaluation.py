@@ -142,10 +142,16 @@ def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> D
     """
     import torch.distributed as dist
     
+    # 🔥 修复：添加分布式同步，确保所有进程同时开始评估
+    is_distributed = dist.is_available() and dist.is_initialized()
+    if is_distributed:
+        if not safe_barrier(timeout=60):
+            print("❌ 多数据集评估开始前同步超时")
+            return {}
+    
     # 🔥 确保模型处于评估模式 - 兼容DeepSpeed包装
     model.eval()
     # 检查分布式状态
-    is_distributed = dist.is_available() and dist.is_initialized()
     if is_distributed:
         current_rank = dist.get_rank()
         world_size = dist.get_world_size()
@@ -345,6 +351,13 @@ def evaluate_single_dataset_fast(model, val_loader, device) -> Tuple[float, floa
     """优化的单数据集评估函数 - 大幅提升速度"""
     import torch.distributed as dist
     
+    # 🔥 修复：添加分布式同步，确保所有进程同时开始评估
+    is_distributed = dist.is_available() and dist.is_initialized()
+    if is_distributed:
+        if not safe_barrier(timeout=60):
+            print("❌ 评估开始前同步超时")
+            return 0.0, 0.0
+    
     # 确保模型处于评估模式
     model.eval()
     if hasattr(model, 'module'):
@@ -438,10 +451,19 @@ def evaluate_single_dataset_fast(model, val_loader, device) -> Tuple[float, floa
             accuracy = correct / total if total > 0 else 0
             print(f"\n📊 评估结果: Loss={avg_loss:.4f}, Accuracy={accuracy:.4f} ({accuracy*100:.2f}%)")
         
+        # 🔥 修复：分布式评估结束后同步
+        if is_distributed:
+            safe_barrier(timeout=30)
+        
         return total_loss / batch_count if batch_count > 0 else 0, correct / total if total > 0 else 0
     else:
         # 单GPU模式
         avg_loss = total_loss / batch_count if batch_count > 0 else 0
         accuracy = correct / total if total > 0 else 0
         print(f"\n📊 评估结果: Loss={avg_loss:.4f}, Accuracy={accuracy:.4f} ({accuracy*100:.2f}%)")
+        
+        # 🔥 修复：评估结束后同步，确保所有进程完成
+        if is_distributed:
+            safe_barrier(timeout=30)
+        
         return avg_loss, accuracy 

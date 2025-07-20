@@ -431,8 +431,8 @@ class DeepSpeedTrainer:
             "step": int(effective_step)
         }
         
-        # 🔥 修复：降低性能指标记录频率，确保能看到perf指标
-        should_log_perf = (effective_step % 20 == 0)  # 每20步记录一次性能指标
+        # 🔥 优化：降低性能指标记录频率，减少开销
+        should_log_perf = (effective_step % 50 == 0)  # 每20步记录一次性能指标
         
         if should_log_perf:
             if step_time > 0:
@@ -579,14 +579,32 @@ class DeepSpeedTrainer:
         if hasattr(self, 'pbar'):
             self.pbar.clear()
         
-        print(f"🔍 开始处理评估步骤 (step={effective_step})")
+        if self.dist_ctx.is_main_process:
+            print(f"🔍 开始处理评估步骤 (step={effective_step})")
         
-        # 简化的评估异常处理，失败时直接退出
-        print(f"🔄 调用evaluate方法...")
-        # 获取eval数据但不让evaluate方法记录到wandb
-        eval_loss, eval_accuracy, eval_results = self.evaluate(step=effective_step, log_to_wandb=False, return_results=True)
+        # 🔥 修复：添加分布式同步，确保所有进程同时开始评估
+        if self.dist_ctx.world_size > 1:
+            from .utils.distributed import safe_barrier
+            if self.dist_ctx.is_main_process:
+                print("🔄 等待所有进程同步...")
+            if not safe_barrier(timeout=60):
+                if self.dist_ctx.is_main_process:
+                    print("❌ 评估前同步超时，跳过评估")
+                return
         
-        print(f"✅ Evaluate方法完成: eval_loss={eval_loss:.4f}, eval_accuracy={eval_accuracy:.4f}")
+        try:
+            # 获取eval数据但不让evaluate方法记录到wandb
+            if self.dist_ctx.is_main_process:
+                print(f"🔄 调用evaluate方法...")
+            eval_loss, eval_accuracy, eval_results = self.evaluate(step=effective_step, log_to_wandb=False, return_results=True)
+            
+            if self.dist_ctx.is_main_process:
+                print(f"✅ Evaluate方法完成: eval_loss={eval_loss:.4f}, eval_accuracy={eval_accuracy:.4f}")
+        except Exception as eval_error:
+            if self.dist_ctx.is_main_process:
+                print(f"❌ 评估失败: {eval_error}")
+            # 评估失败时直接退出，不继续训练
+            raise eval_error
         
         # 构建完整的training数据（包括性能指标）
         current_training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
@@ -619,6 +637,13 @@ class DeepSpeedTrainer:
                 print(f"   ⚠️ 没有找到eval指标")
         else:
             print(f"⚠️ 非主进程，跳过eval指标记录")
+        
+        # 🔥 修复：评估后同步，确保所有进程完成
+        if self.dist_ctx.world_size > 1:
+            from .utils.distributed import safe_barrier
+            if not safe_barrier(timeout=30):
+                if self.dist_ctx.is_main_process:
+                    print("⚠️ 评估后同步超时，但继续训练")
         
         # 恢复模型状态
         self.model.train()
@@ -700,6 +725,9 @@ class DeepSpeedTrainer:
                 
     def _train_epoch(self, epoch, stats):
         """训练一个epoch - 优化版本"""
+        # 简化调试输出
+        if epoch == 0:
+            self.dist_ctx.print_main(f"🔧 初始化第 {epoch+1} 轮训练...")
         self.current_epoch = epoch
         self.model.train()
         
@@ -724,95 +752,110 @@ class DeepSpeedTrainer:
             'memory_usage': []
         }
         
-        for batch_idx, batch in enumerate(self.train_loader):
-            batch_start_time = time.time()
-            self.current_step += 1
-            
-            # 🔥 新增：数据加载时间监控
-            data_loading_time = time.time() - batch_start_time
-            epoch_performance['data_loading_time'] += data_loading_time
-            
-            # 准备批次数据
-            forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(batch)
-            
-            # 🔥 新增：前向传播时间监控
-            forward_start = time.time()
-            outputs = self.model(**forward_kwargs)
-            loss = outputs.loss
-            epoch_performance['forward_time'] += time.time() - forward_start
-            
-            # 🔥 新增：反向传播时间监控
-            backward_start = time.time()
-            self.model.backward(loss)
-            epoch_performance['backward_time'] += time.time() - backward_start
-            
-            # 聚合多卡loss（在分布式训练中）
-            aggregated_loss = self._aggregate_loss(loss)
-            epoch_loss += aggregated_loss
-            
-            # 优化数据集指标更新 - 降低频率以减少开销
-            if self.enable_dataset_metrics and (self.current_step % 10 == 0):
-                self._update_dataset_metrics(batch, outputs, aggregated_loss)
-            
-            # 🔥 收集MFU统计数据
-            if self.mfu_stats is not None:
-                self._collect_mfu_data(batch, inputs, attention_mask)
-            
-            # 🔥 新增：优化器时间监控
-            optimizer_start = time.time()
-            grad_norm = self.model.get_global_grad_norm()
-            self.model.step()
-            epoch_performance['optimizer_time'] += time.time() - optimizer_start
-            
-            # 处理梯度范数
-            grad_norm_value = self._process_grad_norm(grad_norm)
-            current_lr = self.optimizer.param_groups[0]['lr']
-            
-            # 检查是否是有效步骤（完成了梯度累积）
-            is_effective_step = self.current_step % stats['gradient_accumulation_steps'] == 0
-            
-            if is_effective_step:
-                effective_step += 1
+        # 简化输出
+        
+        # 🔥 移除调试代码，恢复性能
+        # import signal
+        # import threading
+        
+        try:
+            for batch_idx, batch in enumerate(self.train_loader):
+                batch_start_time = time.time()
+                self.current_step += 1
                 
-                # 计算步骤时间 - 修复None值问题
-                current_time = time.time()
-                step_start_time = getattr(self.monitor, 'step_start_time', None)
-                if step_start_time is not None:
-                    step_time = current_time - step_start_time
-                else:
-                    step_time = 0.0
+                # 🔥 轻量级：数据加载时间监控
+                data_loading_time = time.time() - batch_start_time
+                epoch_performance['data_loading_time'] += data_loading_time
                 
-                # 判断是否为评估步骤
-                is_eval_step = (effective_step % self.config['eval_steps'] == 0)
+                # 准备批次数据
+                forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(batch)
                 
-                # 处理有效步骤
-                self._handle_effective_step(effective_step, epoch, batch_idx, aggregated_loss, current_lr, 
-                                          grad_norm_value, inputs, attention_mask, step_time, is_eval_step)
+                # 🔥 新增：前向传播时间监控
+                forward_start = time.time()
+                outputs = self.model(**forward_kwargs)
+                loss = outputs.loss
+                epoch_performance['forward_time'] += time.time() - forward_start
                 
-                # 详细日志记录
-                if effective_step % self.config['logging_steps'] == 0:
-                    self._handle_logging_step(effective_step, aggregated_loss, grad_norm_value, current_lr, 
-                                            epoch, batch_idx, inputs, attention_mask)
+                # 🔥 新增：反向传播时间监控
+                backward_start = time.time()
+                self.model.backward(loss)
+                epoch_performance['backward_time'] += time.time() - backward_start
                 
-                # 定期评估
-                if effective_step > 0 and effective_step % self.config['eval_steps'] == 0:
-                    if self.dist_ctx.is_main_process:
-                        print(f"\n🎯 触发评估步骤 (step={effective_step}, eval_steps={self.config['eval_steps']})")
-                    self._handle_evaluation_step(effective_step, epoch, aggregated_loss, current_lr, 
-                                               grad_norm_value, inputs, attention_mask, step_time)
+                # 聚合多卡loss（在分布式训练中）
+                aggregated_loss = self._aggregate_loss(loss)
+                epoch_loss += aggregated_loss
                 
-                # 定期保存检查点
-                if effective_step > 0 and effective_step % self.config['save_steps'] == 0:
-                    self._handle_save_step(effective_step)
-            
-            # 🔥 新增：定期内存清理
-            if batch_idx % 100 == 0 and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+                # 优化数据集指标更新 - 降低频率以减少开销
+                if self.enable_dataset_metrics and (self.current_step % 10 == 0):
+                    self._update_dataset_metrics(batch, outputs, aggregated_loss)
                 
-            # 🔥 新增：记录内存使用情况
-            if torch.cuda.is_available():
-                memory_allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
-                epoch_performance['memory_usage'].append(memory_allocated)
+                # 🔥 优化：减少MFU数据收集频率
+                if self.mfu_stats is not None and self.current_step % 5 == 0:  # 每5步收集一次
+                    self._collect_mfu_data(batch, inputs, attention_mask)
+                
+                # 🔥 新增：优化器时间监控
+                optimizer_start = time.time()
+                grad_norm = self.model.get_global_grad_norm()
+                self.model.step()
+                epoch_performance['optimizer_time'] += time.time() - optimizer_start
+                
+                # 处理梯度范数
+                grad_norm_value = self._process_grad_norm(grad_norm)
+                current_lr = self.optimizer.param_groups[0]['lr']
+                
+                # 检查是否是有效步骤（完成了梯度累积）
+                is_effective_step = self.current_step % stats['gradient_accumulation_steps'] == 0
+                
+                if is_effective_step:
+                    effective_step += 1
+                    
+                    # 计算步骤时间 - 修复None值问题
+                    current_time = time.time()
+                    step_start_time = getattr(self.monitor, 'step_start_time', None)
+                    if step_start_time is not None:
+                        step_time = current_time - step_start_time
+                    else:
+                        step_time = 0.0
+                    
+                    # 判断是否为评估步骤
+                    is_eval_step = (effective_step % self.config['eval_steps'] == 0)
+                    
+                    # 处理有效步骤
+                    self._handle_effective_step(effective_step, epoch, batch_idx, aggregated_loss, current_lr, 
+                                              grad_norm_value, inputs, attention_mask, step_time, is_eval_step)
+                    
+                    # 详细日志记录
+                    if effective_step % self.config['logging_steps'] == 0:
+                        self._handle_logging_step(effective_step, aggregated_loss, grad_norm_value, current_lr, 
+                                                epoch, batch_idx, inputs, attention_mask)
+                    
+                    # 定期评估
+                    if effective_step > 0 and effective_step % self.config['eval_steps'] == 0:
+                        if self.dist_ctx.is_main_process:
+                            print(f"\n🎯 触发评估步骤 (step={effective_step}, eval_steps={self.config['eval_steps']})")
+                        self._handle_evaluation_step(effective_step, epoch, aggregated_loss, current_lr, 
+                                                   grad_norm_value, inputs, attention_mask, step_time)
+                    
+                    # 定期保存检查点
+                    if effective_step > 0 and effective_step % self.config['save_steps'] == 0:
+                        self._handle_save_step(effective_step)
+                
+                # 🔥 优化：减少内存清理和监控频率
+                if batch_idx % 500 == 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    
+                # 🔥 优化：减少内存监控频率
+                if batch_idx % 100 == 0 and torch.cuda.is_available():
+                    memory_allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
+                    epoch_performance['memory_usage'].append(memory_allocated)
+                    
+        except Exception as e:
+            self.dist_ctx.print_main(f"❌ 训练循环异常: {e}")
+            import traceback
+            traceback.print_exc()
+            raise e
+        finally:
+            pass
         
         # Epoch结束统计
         epoch_time = time.time() - epoch_start_time
@@ -915,6 +958,7 @@ class DeepSpeedTrainer:
         
         # 训练循环
         try:
+            self.dist_ctx.print_main("🚀 开始训练...")
             for epoch in range(self.config['training']['num_epochs']):
                 effective_step = self._train_epoch(epoch, stats)
         except KeyboardInterrupt:
