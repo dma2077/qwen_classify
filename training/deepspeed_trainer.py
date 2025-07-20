@@ -536,8 +536,8 @@ class DeepSpeedTrainer:
         
         # 🔥 修复：确保所有步骤都记录training和perf指标到WandB
         if self.dist_ctx.is_main_process:
-            # 减少training指标记录频率
-            should_log_training = (effective_step % (self.monitor.freq['training_log_freq'] * 2) == 0)
+            # 🔥 大幅减少training指标记录频率以测试性能
+            should_log_training = (effective_step % (self.monitor.freq['training_log_freq'] * 10) == 0)
             
             if should_log_training:
                 training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
@@ -759,20 +759,20 @@ class DeepSpeedTrainer:
                 aggregated_loss = self._aggregate_loss(loss)
                 epoch_loss += aggregated_loss
                 
-                # 优化数据集指标更新 - 降低频率以减少开销
-                if self.enable_dataset_metrics and (self.current_step % 10 == 0):
-                    self._update_dataset_metrics(batch, outputs, aggregated_loss)
+                # 🔥 临时禁用数据集指标更新以测试性能
+                # if self.enable_dataset_metrics and (self.current_step % 10 == 0):
+                #     self._update_dataset_metrics(batch, outputs, aggregated_loss)
                 
-                # 🔥 大幅减少MFU数据收集频率
-                if self.mfu_stats is not None and self.current_step % 20 == 0:  # 每20步收集一次
-                    self._collect_mfu_data(batch, inputs, attention_mask)
+                # 🔥 临时禁用MFU数据收集以测试性能
+                # if self.mfu_stats is not None and self.current_step % 20 == 0:
+                #     self._collect_mfu_data(batch, inputs, attention_mask)
                 
                 # 优化器步骤
                 grad_norm = self.model.get_global_grad_norm()
                 self.model.step()
                 
-                # 处理梯度范数
-                grad_norm_value = self._process_grad_norm(grad_norm)
+                # 🔥 简化梯度范数处理
+                grad_norm_value = grad_norm if grad_norm is not None else 0.0
                 current_lr = self.optimizer.param_groups[0]['lr']
                 
                 # 检查是否是有效步骤（完成了梯度累积）
@@ -796,8 +796,8 @@ class DeepSpeedTrainer:
                     self._handle_effective_step(effective_step, epoch, batch_idx, aggregated_loss, current_lr, 
                                               grad_norm_value, inputs, attention_mask, step_time, is_eval_step)
                     
-                    # 详细日志记录
-                    if effective_step % self.config['logging_steps'] == 0:
+                    # 🔥 减少日志记录频率以测试性能
+                    if effective_step % (self.config['logging_steps'] * 5) == 0:  # 降低5倍频率
                         self._handle_logging_step(effective_step, aggregated_loss, grad_norm_value, current_lr, 
                                                 epoch, batch_idx, inputs, attention_mask)
                     
