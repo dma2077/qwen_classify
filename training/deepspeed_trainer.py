@@ -743,17 +743,22 @@ class DeepSpeedTrainer:
         # import threading
         
         try:
+            print("🔍 开始遍历训练数据...")
             for batch_idx, batch in enumerate(self.train_loader):
+                print(f"🔍 获取到batch {batch_idx}")
                 batch_start_time = time.time()
                 self.current_step += 1
                 
                 # 移除数据加载时间监控，减少开销
                 
                 # 准备批次数据
+                print(f"🔍 准备batch {batch_idx} 数据...")
                 forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(batch)
                 
                 # 移除时间监控，恢复原始性能
+                print(f"🔍 开始前向传播 batch {batch_idx}...")
                 outputs = self.model(**forward_kwargs)
+                print(f"🔍 前向传播完成 batch {batch_idx}")
                 loss = outputs.loss
                 
                 # 反向传播
