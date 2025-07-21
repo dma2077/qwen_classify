@@ -528,9 +528,8 @@ class DeepSpeedTrainer:
     def _handle_effective_step(self, effective_step, epoch, batch_idx, aggregated_loss, current_lr, 
                               grad_norm_value, inputs, attention_mask, step_time, is_eval_step):
         """处理有效步骤的逻辑"""
-        # 🔥 优化：进一步降低进度条更新频率，从每10步改为每20步
-        if effective_step % 20 == 0:
-            self._update_progress_bar(effective_step, aggregated_loss, current_lr, epoch, batch_idx)
+        # 🔥 修复：每个有效步都更新进度条
+        self._update_progress_bar(effective_step, aggregated_loss, current_lr, epoch, batch_idx)
         
         # 🔥 临时禁用监控器记录以测试性能
         # self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, skip_wandb=is_eval_step)
@@ -553,14 +552,15 @@ class DeepSpeedTrainer:
                 
     def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
         """更新进度条"""
-        if hasattr(self, 'pbar'):
-            # 🔥 修复：只更新1步，而不是10步
-            self.pbar.update(1)  # 从10改为1
+        if hasattr(self, 'pbar') and self.dist_ctx.is_main_process:
+            # 🔥 修复：手动设置进度条的位置，而不是update()
+            self.pbar.n = effective_step  # 直接设置当前位置
             self.pbar.set_postfix({
                 'loss': f'{aggregated_loss:.4f}',
                 'lr': f'{current_lr:.2e}',
                 'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
             })
+            self.pbar.refresh()  # 强制刷新显示
             
     def _handle_evaluation_step(self, effective_step, epoch, aggregated_loss, current_lr, grad_norm_value, 
                                inputs, attention_mask, step_time):
@@ -743,22 +743,27 @@ class DeepSpeedTrainer:
         # import threading
         
         try:
-            print("🔍 开始遍历训练数据...")
+            if self.dist_ctx.is_main_process:
+                print("🔍 开始遍历训练数据...")
             for batch_idx, batch in enumerate(self.train_loader):
-                print(f"🔍 获取到batch {batch_idx}")
+                if self.dist_ctx.is_main_process:
+                    print(f"🔍 获取到batch {batch_idx}")
                 batch_start_time = time.time()
                 self.current_step += 1
                 
                 # 移除数据加载时间监控，减少开销
                 
                 # 准备批次数据
-                print(f"🔍 准备batch {batch_idx} 数据...")
+                if self.dist_ctx.is_main_process:
+                    print(f"🔍 准备batch {batch_idx} 数据...")
                 forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(batch)
                 
                 # 移除时间监控，恢复原始性能
-                print(f"🔍 开始前向传播 batch {batch_idx}...")
+                if self.dist_ctx.is_main_process:
+                    print(f"🔍 开始前向传播 batch {batch_idx}...")
                 outputs = self.model(**forward_kwargs)
-                print(f"🔍 前向传播完成 batch {batch_idx}")
+                if self.dist_ctx.is_main_process:
+                    print(f"🔍 前向传播完成 batch {batch_idx}")
                 loss = outputs.loss
                 
                 # 反向传播
@@ -789,6 +794,8 @@ class DeepSpeedTrainer:
                 
                 if is_effective_step:
                     effective_step += 1
+                    if self.dist_ctx.is_main_process and effective_step <= 10:
+                        print(f"🎯 有效步骤更新: current_step={self.current_step}, effective_step={effective_step}, gradient_accumulation_steps={stats['gradient_accumulation_steps']}")
                     
                     # 🔥 临时简化步骤时间计算以测试性能
                     step_time = 0.0  # 直接设为0，避免时间计算开销
