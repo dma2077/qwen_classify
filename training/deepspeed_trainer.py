@@ -785,13 +785,14 @@ class DeepSpeedTrainer:
                 if is_effective_step:
                     effective_step += 1
                     
-                    # 计算步骤时间 - 修复None值问题
-                    current_time = time.time()
-                    step_start_time = getattr(self.monitor, 'step_start_time', None)
-                    if step_start_time is not None:
-                        step_time = current_time - step_start_time
-                    else:
-                        step_time = 0.0
+                    # 🔥 临时简化步骤时间计算以测试性能
+                    step_time = 0.0  # 直接设为0，避免时间计算开销
+                    # current_time = time.time()
+                    # step_start_time = getattr(self.monitor, 'step_start_time', None)
+                    # if step_start_time is not None:
+                    #     step_time = current_time - step_start_time
+                    # else:
+                    #     step_time = 0.0
                     
                     # 判断是否为评估步骤
                     is_eval_step = (effective_step % self.config['eval_steps'] == 0)
@@ -911,14 +912,15 @@ class DeepSpeedTrainer:
         # mfu_init_success = self._init_mfu_stats()
         mfu_init_success = True  # 假设成功，跳过MFU计算
         
+        # 🔥 临时禁用分布式广播操作以测试性能
         # 在分布式环境中同步初始化状态
-        if hasattr(self.dist_ctx, 'world_size') and self.dist_ctx.world_size > 1:
-            import torch.distributed as dist
-            # 广播初始化状态
-            if dist.is_initialized():
-                success_tensor = torch.tensor([1 if mfu_init_success else 0], dtype=torch.int, device=torch.cuda.current_device())
-                dist.broadcast(success_tensor, src=0)
-                mfu_init_success = bool(success_tensor.item())
+        # if hasattr(self.dist_ctx, 'world_size') and self.dist_ctx.world_size > 1:
+        #     import torch.distributed as dist
+        #     # 广播初始化状态
+        #     if dist.is_initialized():
+        #         success_tensor = torch.tensor([1 if mfu_init_success else 0], dtype=torch.int, device=torch.cuda.current_device())
+        #         dist.broadcast(success_tensor, src=0)
+        #         mfu_init_success = bool(success_tensor.item())
         
         if mfu_init_success:
             self.dist_ctx.print_main("✅ MFU统计器初始化成功")
@@ -1053,24 +1055,27 @@ class DeepSpeedTrainer:
     
     def _aggregate_loss(self, loss):
         """在分布式训练中聚合loss"""
-        if self.dist_ctx.world_size <= 1:
-            return loss.item()
+        # 🔥 临时禁用Loss聚合以测试性能
+        return loss.item()
         
-        try:
-            import torch.distributed as dist
-            # 将当前GPU的loss广播到所有进程并求平均
-            loss_tensor = torch.tensor(loss.item(), dtype=torch.float32, device=self.dist_ctx.device)
-            
-            # 使用all_reduce来计算所有GPU的平均loss
-            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-            aggregated_loss = loss_tensor.item() / self.dist_ctx.world_size
-            
-            return aggregated_loss
-            
-        except Exception as e:
-            # 如果聚合失败，返回当前GPU的loss
-            print(f"⚠️  Loss聚合失败，使用当前GPU loss: {e}")
-            return loss.item()
+        # if self.dist_ctx.world_size <= 1:
+        #     return loss.item()
+        # 
+        # try:
+        #     import torch.distributed as dist
+        #     # 将当前GPU的loss广播到所有进程并求平均
+        #     loss_tensor = torch.tensor(loss.item(), dtype=torch.float32, device=self.dist_ctx.device)
+        #     
+        #     # 使用all_reduce来计算所有GPU的平均loss
+        #     dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+        #     aggregated_loss = loss_tensor.item() / self.dist_ctx.world_size
+        #     
+        #     return aggregated_loss
+        #     
+        # except Exception as e:
+        #     # 如果聚合失败，返回当前GPU的loss
+        #     print(f"⚠️  Loss聚合失败，使用当前GPU loss: {e}")
+        #     return loss.item()
 
     def save_checkpoint(self, step, is_best=False):
         """保存检查点"""
