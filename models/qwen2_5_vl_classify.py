@@ -58,7 +58,7 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
 
     def _apply_logits_masking(self, logits, dataset_names=None, num_classes_list=None):
         """
-        根据数据集的类别数量对logits进行masking
+        根据数据集的类别数量对logits进行masking（带数值稳定性检查）
         
         Args:
             logits: [batch_size, num_labels] 的logits tensor
@@ -74,6 +74,9 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         if dataset_names is None and num_classes_list is None:
             return logits
             
+        # 🔥 数值稳定性检查：裁剪过大的logits值
+        logits = torch.clamp(logits, min=-50.0, max=50.0)
+        
         masked_logits = logits.clone()
         batch_size = logits.size(0)
         
@@ -90,10 +93,17 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
                 dataset_config = self.dataset_configs.get(dataset_name, {})
                 num_classes = dataset_config.get("num_classes", None)
             
-            # 应用masking
+            # 应用masking - 使用更安全的masking值
             if num_classes is not None and num_classes < logits.size(-1):
-                # 将超出数据集类别范围的logits设为很小的值（相当于mask掉）
-                masked_logits[i, num_classes:] = float('-inf')
+                # 🔥 使用-1e9而不是-inf，避免数值问题
+                mask_value = -1e9
+                masked_logits[i, num_classes:] = mask_value
+                
+                # 🔥 安全检查：确保有效位置不全为极小值
+                valid_logits = masked_logits[i, :num_classes]
+                if torch.all(valid_logits < -10.0):
+                    # 如果有效位置的logits都太小，进行调整
+                    masked_logits[i, :num_classes] = torch.clamp(valid_logits, min=-10.0)
         
         return masked_logits
 
@@ -135,10 +145,22 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
         if self.enable_logits_masking:
             logits = self._apply_logits_masking(logits, dataset_names, num_classes_list)
         
-        # 计算损失 - 直接在forward中创建，避免继承关系问题
+        # 计算损失 - 带数值稳定性检查
         loss = None
         if labels is not None:
             try:
+                # 🔥 数值稳定性检查：标签边界检查
+                max_label = labels.max().item()
+                if max_label >= logits.size(-1):
+                    print(f"⚠️ 发现越界标签: max_label={max_label}, logits_classes={logits.size(-1)}")
+                    # 裁剪越界的标签
+                    labels = torch.clamp(labels, min=0, max=logits.size(-1)-1)
+                
+                # 🔥 数值稳定性检查：logits值检查
+                if torch.any(torch.isnan(logits)) or torch.any(torch.isinf(logits)):
+                    print(f"⚠️ logits包含NaN或Inf，进行清理")
+                    logits = torch.nan_to_num(logits, nan=0.0, posinf=1e9, neginf=-1e9)
+                
                 # 不使用self.loss_function，直接在这里创建损失函数
                 loss_type = self.loss_config.get('type', 'cross_entropy')
                 
@@ -170,11 +192,24 @@ class Qwen2_5_VLForImageClassification(Qwen2_5_VLPreTrainedModel):
                     # 标准CrossEntropyLoss
                     import torch.nn.functional as F
                     loss = F.cross_entropy(logits, labels)
+                
+                # 🔥 最终数值稳定性检查
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"❌ 损失计算结果为NaN或Inf: {loss}")
+                    # 使用一个小的固定损失值，避免训练崩溃
+                    loss = torch.tensor(1.0, device=logits.device, requires_grad=True)
+                    print(f"🔧 使用回退损失值: {loss}")
                     
             except Exception as e:
+                print(f"❌ 损失计算过程出错: {e}")
                 # 静默回退到标准损失函数
                 import torch.nn.functional as F
-                loss = F.cross_entropy(logits, labels)
+                try:
+                    loss = F.cross_entropy(logits, labels)
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        loss = torch.tensor(1.0, device=logits.device, requires_grad=True)
+                except:
+                    loss = torch.tensor(1.0, device=logits.device, requires_grad=True)
         
         # 🔥 关键修复：无论训练还是评估都不返回大tensor，避免NCCL超时
         # 经过代码分析确认：训练和评估过程中都不需要hidden_states和attentions

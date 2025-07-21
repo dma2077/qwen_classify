@@ -128,6 +128,20 @@ torchrun \
     --config configs/food101_no_eval_save_all.yaml
 ```
 
+### 3. 功能测试
+
+#### 测试skip_evaluation最高优先级功能
+```bash
+# 验证skip_evaluation是否能强制覆盖所有相关参数
+python scripts/test_skip_evaluation_priority.py
+```
+
+#### 测试修复后的eval_ratio功能  
+```bash
+# 验证eval_ratio在单数据集模式下是否正常工作
+python scripts/test_eval_ratio.py
+```
+
 ## 📂 输出结构
 
 训练完成后，输出目录将包含所有的checkpoint：

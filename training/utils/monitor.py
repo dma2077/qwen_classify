@@ -239,7 +239,7 @@ def _create_dummy_batch_for_profiling(batch_size: int, seq_length: int, device: 
         return {}
 
 def profile_model_flops(model, batch_example: Dict) -> float:
-    """使用PyTorch profiler获取模型实际FLOPs（包括前向+反向传播）"""
+    """使用估算方法计算模型FLOPs（用于MFU计算）"""
     try:
         # 确保模型在训练模式
         model.train()
@@ -251,33 +251,9 @@ def profile_model_flops(model, batch_example: Dict) -> float:
             print(f"⚠️  获取序列长度失败: {e}，使用输入长度")
             actual_seq_length = batch_example['input_ids'].size(1)
         
-        print(f"🔍 开始FLOPs profiling: 序列长度={actual_seq_length}")
+        print(f"🔍 开始FLOPs估算: 序列长度={actual_seq_length}")
         
-        # 尝试使用profiler测量FLOPs
-        try:
-            # 测量前向传播FLOPs
-            forward_flops = _profile_forward_flops(model, batch_example)
-            
-            # 测量反向传播FLOPs
-            backward_flops = _profile_backward_flops(model, batch_example)
-            
-            total_flops = forward_flops + backward_flops
-            
-            if total_flops > 0:
-                print(f"✅ Profiler FLOPs测量成功:")
-                print(f"  前向传播FLOPs: {forward_flops:.2e}")
-                print(f"  反向传播FLOPs: {backward_flops:.2e}")
-                print(f"  总FLOPs: {total_flops:.2e}")
-                return float(total_flops)
-            else:
-                print("⚠️  Profiler未获取到FLOPs，使用估算方法")
-                
-        except Exception as profiler_error:
-            print(f"Profiler测量失败: {profiler_error}")
-            print("🔧 使用估算方法作为备选")
-        
-        # 如果profiler失败，使用估算方法
-        print("🔧 使用估算方法测量FLOPs")
+        # 使用估算方法计算FLOPs
         total_flops = _estimate_flops_fallback(model, batch_example, actual_seq_length)
         
         if total_flops > 0:
@@ -288,171 +264,17 @@ def profile_model_flops(model, batch_example: Dict) -> float:
         return float(total_flops)
         
     except Exception as e:
-        print(f"FLOPs测量完全失败: {e}")
+        print(f"FLOPs估算失败: {e}")
         # 最后的回退：使用最基本的估算
         try:
             return _estimate_flops_fallback(model, batch_example)
         except:
-            print("❌ 所有FLOPs测量方法都失败，返回0")
+            print("❌ FLOPs估算方法失败，返回0")
             return 0.0
 
-def _profile_forward_flops(model, batch_example: Dict) -> float:
-    """测量前向传播的FLOPs"""
-    try:
-        model.eval()  # 使用eval模式避免dropout等影响FLOPs计算
-        
-        # 检查PyTorch版本兼容性
-        torch_version = torch.__version__
-        print(f"🔍 前向传播Profiler - PyTorch版本: {torch_version}")
-        
-        try:
-            with torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-                record_shapes=True,
-                profile_memory=False
-            ) as prof:
-                with torch.no_grad():
-                    # 仅执行前向传播
-                    outputs = model(**batch_example)
-            
-            # 获取FLOPs统计
-            flops = 0
-            try:
-                events = prof.events()
-                print(f"🔍 前向传播Profiler - events类型: {type(events)}")
-                
-                if events is not None:
-                    try:
-                        events_length = len(events)
-                        print(f"🔍 前向传播Profiler - events长度: {events_length}")
-                        
-                        if events_length > 0:
-                            # 🔥 修复：安全地迭代events，避免TypeError
-                            try:
-                                events_list = list(events)  # 确保events是可迭代的
-                                print(f"🔍 前向传播Profiler - 成功转换为list，长度: {len(events_list)}")
-                                
-                                for i, event in enumerate(events_list):
-                                    if hasattr(event, 'flops') and event.flops > 0:
-                                        flops += event.flops
-                                        if i < 5:  # 只打印前5个有FLOPs的事件
-                                            print(f"  Event {i}: flops={event.flops}")
-                                
-                                if flops > 0:
-                                    print(f"✅ 前向传播FLOPs: {flops:.2e}")
-                                    return float(flops)
-                                else:
-                                    print("⚠️  前向传播Profiler未检测到FLOPs")
-                            except (TypeError, AttributeError) as iter_error:
-                                print(f"⚠️  迭代前向传播events失败: {iter_error}")
-                                print(f"  events类型: {type(events)}")
-                                print(f"  events内容: {events}")
-                                return 0.0
-                        else:
-                            print("⚠️  前向传播Profiler events为空")
-                    except Exception as len_error:
-                        print(f"⚠️  获取events长度失败: {len_error}")
-                        print(f"  events类型: {type(events)}")
-                        return 0.0
-                else:
-                    print("⚠️  前向传播Profiler events为None")
-            except Exception as events_error:
-                print(f"⚠️  获取前向传播profiler events失败: {events_error}")
-                import traceback
-                traceback.print_exc()
-            
-            return 0.0
-            
-        except Exception as e:
-            print(f"前向传播Profiler错误: {e}")
-            return 0.0
-        
-    except Exception as e:
-        print(f"前向传播FLOPs测量错误: {e}")
-        return 0.0
 
-def _profile_backward_flops(model, batch_example: Dict) -> float:
-    """测量反向传播的FLOPs"""
-    try:
-        model.train()  # 训练模式
-        
-        # 检查PyTorch版本兼容性
-        torch_version = torch.__version__
-        print(f"🔍 反向传播Profiler - PyTorch版本: {torch_version}")
-        
-        # 先执行前向传播（不在profiler中）
-        outputs = model(**batch_example)
-        loss = outputs.loss
-        
-        try:
-            # 测量反向传播的FLOPs
-            with torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-                record_shapes=True,
-                profile_memory=False
-            ) as prof:
-                # 仅执行反向传播
-                loss.backward()
-            
-            # 清理梯度
-            model.zero_grad()
-            
-            # 获取FLOPs统计
-            flops = 0
-            try:
-                events = prof.events()
-                print(f"🔍 反向传播Profiler - events类型: {type(events)}")
-                
-                if events is not None:
-                    try:
-                        events_length = len(events)
-                        print(f"🔍 反向传播Profiler - events长度: {events_length}")
-                        
-                        if events_length > 0:
-                            # 🔥 修复：安全地迭代events，避免TypeError
-                            try:
-                                events_list = list(events)  # 确保events是可迭代的
-                                print(f"🔍 反向传播Profiler - 成功转换为list，长度: {len(events_list)}")
-                                
-                                for i, event in enumerate(events_list):
-                                    if hasattr(event, 'flops') and event.flops > 0:
-                                        flops += event.flops
-                                        if i < 5:  # 只打印前5个有FLOPs的事件
-                                            print(f"  Event {i}: flops={event.flops}")
-                                
-                                if flops > 0:
-                                    print(f"✅ 反向传播FLOPs: {flops:.2e}")
-                                    return float(flops)
-                                else:
-                                    print("⚠️  反向传播Profiler未检测到FLOPs")
-                            except (TypeError, AttributeError) as iter_error:
-                                print(f"⚠️  迭代反向传播events失败: {iter_error}")
-                                print(f"  events类型: {type(events)}")
-                                print(f"  events内容: {events}")
-                                return 0.0
-                        else:
-                            print("⚠️  反向传播Profiler events为空")
-                    except Exception as len_error:
-                        print(f"⚠️  获取events长度失败: {len_error}")
-                        print(f"  events类型: {type(events)}")
-                        return 0.0
-                else:
-                    print("⚠️  反向传播Profiler events为None")
-            except Exception as events_error:
-                print(f"⚠️  获取反向传播profiler events失败: {events_error}")
-                import traceback
-                traceback.print_exc()
-            
-            return 0.0
-            
-        except Exception as e:
-            print(f"反向传播Profiler错误: {e}")
-            model.zero_grad()  # 确保清理梯度
-            return 0.0
-        
-    except Exception as e:
-        print(f"反向传播FLOPs测量错误: {e}")
-        return 0.0
+
+
 
 def _get_actual_sequence_length(model, batch_example: Dict) -> int:
     """获取实际的序列长度（包括visual tokens + text tokens）"""

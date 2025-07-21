@@ -1,0 +1,160 @@
+model:
+  pretrained_name: "/llm_reco/dehua/model/Qwen2.5-VL-7B-Instruct"
+  num_labels: 2000  # 所有数据集中的最大类别数
+
+# 🔥 使用最稳定的损失函数
+loss:
+  type: "cross_entropy"  # 最稳定的选择
+
+# 多数据集配置 - 稳定版
+datasets:
+  dataset_configs:
+    food101:
+      num_classes: 101
+      description: "Food-101 dataset"
+      eval_ratio: 0.2
+    food2k:
+      num_classes: 2000
+      description: "Food2K dataset"
+      eval_ratio: 0.1
+    food172:
+      num_classes: 172
+      description: "Food172 dataset"
+      eval_ratio: 0.2
+    foodx251:
+      num_classes: 251
+      description: "foodx251 dataset"
+      eval_ratio: 0.2
+    fru92:
+      num_classes: 92
+      description: "fru92 dataset"
+      eval_ratio: 0.2
+    veg200:
+      num_classes: 200
+      description: "veg200 dataset"
+      eval_ratio: 0.2
+  
+  # 🔥 暂时禁用logits masking以排除问题
+  enable_logits_masking: false
+  shuffle_datasets: true
+
+# 数据文件配置
+data:
+  train_jsonl_list:
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_train.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food2k_train.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food172_train.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/foodx251_train.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/fru92_train.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/veg200_train.jsonl"
+  val_jsonl_list:
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_test.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food2k_test.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food172_test.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/foodx251_test.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/fru92_test.jsonl"
+    - "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/veg200_test.jsonl"
+
+training:
+  epochs: 3  # 减少epoch数用于快速测试
+  lr: 1e-6   # 🔥 大幅降低学习率
+  weight_decay: 0.01
+  warmup_steps: 100
+  max_grad_norm: 1.0  # 🔥 添加梯度裁剪
+  output_dir: "/mmu_mllm_hdd_2/madehua/model/qwen_classify/multi_dataset_stable"
+  logging_steps: 20
+  save_steps: 200
+  eval_steps: 100  # 更频繁的评估以监控稳定性
+  save_hf_format: true
+  save_deepspeed_format: false
+  num_workers: 8
+
+  # 🔥 数值稳定性配置
+  numerical_stability:
+    check_inf_loss: true
+    clip_logits: true
+    logits_clip_value: 10.0
+    use_stable_softmax: true
+
+  # 最佳模型追踪
+  best_model_tracking:
+    enabled: true
+    metric: "overall_accuracy"
+    mode: "max"
+    save_best_only: false  # 保存更多checkpoint用于调试
+
+  # 评估配置
+  evaluation:
+    partial_eval_during_training: true
+    full_eval_at_end: true
+    eval_best_model_only: false
+
+# 优化器配置 - 更保守的设置
+optimizer:
+  type: "adamw"
+  lr: 1e-6
+  weight_decay: 0.01
+  eps: 1e-8
+  betas: [0.9, 0.999]
+
+# 学习率调度器 - 更稳定的设置
+lr_scheduler:
+  type: "cosine"
+  warmup_steps: 100
+  min_lr_ratio: 0.1
+  num_cycles: 0.5
+
+# DeepSpeed配置 - 稳定性优先
+deepspeed:
+  config_path: "configs/ds_s2_stable.json"
+
+# 监控配置
+monitor:
+  freq:
+    training_log_freq: 10
+    eval_log_freq: 1
+    perf_log_freq: 50
+    gpu_log_freq: 50
+    flops_profile_freq: 100
+    local_save_freq: 200
+    progress_update_freq: 20
+
+# WandB配置
+wandb:
+  enabled: true
+  project: "qwen_classify_stable"
+  name: "multi_dataset_stable_test"
+  log_code: false
+  log_dataset_metrics: true
+  
+# 🔥 额外的稳定性设置
+stability:
+  # 检测到inf loss时的处理
+  inf_loss_handling:
+    enabled: true
+    fallback_loss_value: 1.0
+    max_inf_count: 10  # 连续10次inf loss后停止训练
+  
+  # logits数值范围控制
+  logits_control:
+    enabled: true
+    clip_value: 50.0
+    check_nan: true
+  
+  # 标签验证
+  label_validation:
+    enabled: true
+    check_bounds: true
+    auto_fix: true
+
+# 📋 使用说明:
+# 1. 这个配置文件专门用于解决多数据集训练中的Loss=inf问题
+# 2. 主要修复措施:
+#    - 降低学习率到1e-6
+#    - 添加梯度裁剪
+#    - 暂时禁用logits masking
+#    - 使用最稳定的CrossEntropy损失
+#    - 添加各种数值稳定性检查
+# 3. 使用方法:
+#    python scripts/diagnose_inf_loss.py configs/your_original_config.yaml
+#    然后使用生成的_fixed.yaml文件，或直接使用这个模板 
