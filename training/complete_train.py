@@ -82,8 +82,6 @@ def setup_model(config):
         enable_logits_masking=enable_logits_masking
     )
     
-    if is_main_process():
-        print(f"✅ 模型创建完成")
     return model
 
 def setup_data(config):
