@@ -30,9 +30,36 @@ def create_dataloaders(config):
             # 如果是字典，直接使用
             deepspeed_config = config['deepspeed']
         
-        # 训练时使用micro_batch_size_per_gpu，评估时使用train_batch_size
-        train_batch_size = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
-        eval_batch_size = deepspeed_config.get('train_batch_size', 1)
+        # 🔥 修复batch size逻辑：
+        # - 训练DataLoader使用：train_micro_batch_size_per_gpu（DeepSpeed会处理gradient accumulation）
+        # - 评估时希望使用：micro_batch_size_per_gpu × num_gpus（gradient_accumulation_steps=1的等效）
+        
+        micro_batch_size_per_gpu = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
+        total_batch_size = deepspeed_config.get('train_batch_size', 1)
+        gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
+        
+        # 训练DataLoader使用micro batch size（DeepSpeed会自动处理gradient accumulation）
+        train_batch_size = micro_batch_size_per_gpu
+        
+        # 检查分布式状态以获取GPU数量
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            num_gpus = dist.get_world_size()
+        else:
+            num_gpus = 1
+        
+        # 评估batch size = micro_batch_size_per_gpu × num_gpus（相当于gradient_accumulation_steps=1时的总batch size）
+        eval_batch_size = micro_batch_size_per_gpu * num_gpus
+        
+        # 验证计算是否正确
+        expected_total_batch = micro_batch_size_per_gpu * num_gpus * gradient_accumulation_steps
+        if expected_total_batch != total_batch_size:
+            print(f"⚠️ batch size配置检查:")
+            print(f"   micro_batch_size_per_gpu: {micro_batch_size_per_gpu}")
+            print(f"   num_gpus: {num_gpus}")
+            print(f"   gradient_accumulation_steps: {gradient_accumulation_steps}")
+            print(f"   计算的总batch size: {expected_total_batch}")
+            print(f"   配置的train_batch_size: {total_batch_size}")
     else:
         batch_size = config['training'].get('batch_size', 8)
     

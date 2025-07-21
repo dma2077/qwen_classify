@@ -754,18 +754,22 @@ class TrainingMonitor:
             wandb_config = self.config.get('wandb', {})
             wandb_enabled = wandb_config.get('enabled', False)
             
-            # 🔥 关键修复：根据配置设置use_wandb标志
-            if wandb_enabled and WANDB_AVAILABLE and self._is_main_process():
-                self.use_wandb = True
-            else:
-                self.use_wandb = False
-                if not wandb_enabled:
-                    print("⚠️ WandB在配置中被禁用")
-                elif not WANDB_AVAILABLE:
-                    print("⚠️ WandB未安装，跳过WandB初始化")
-                elif not self._is_main_process():
-                    print("⚠️ 非主进程，跳过WandB初始化")
-                return
+            # 🔥 强制禁用WandB以提升性能
+            # if wandb_enabled and WANDB_AVAILABLE and self._is_main_process():
+            #     self.use_wandb = True
+            # else:
+            #     self.use_wandb = False
+            #     if not wandb_enabled:
+            #         print("⚠️ WandB在配置中被禁用")
+            #     elif not WANDB_AVAILABLE:
+            #         print("⚠️ WandB未安装，跳过WandB初始化")
+            
+            # 强制禁用WandB
+            self.use_wandb = False
+            print("🔥 WandB已强制禁用以提升性能")
+            # elif not self._is_main_process():
+            #     print("⚠️ 非主进程，跳过WandB初始化")
+            return
             
             import wandb
             
