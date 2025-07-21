@@ -37,7 +37,7 @@ def create_dataloaders(config):
         micro_batch_size_per_gpu = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
         total_batch_size = deepspeed_config.get('train_batch_size', 1)
         gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
-        
+        print("deepspeed_config", deepspeed_config)
         # 训练DataLoader使用micro batch size（DeepSpeed会自动处理gradient accumulation）
         train_batch_size = micro_batch_size_per_gpu
         
