@@ -88,6 +88,12 @@ def setup_model(config):
 
 def setup_data(config):
     """设置数据加载器"""
+    # 🔥 修复：确保在创建DataLoader前分布式已初始化
+    import torch.distributed as dist
+    if not (dist.is_available() and dist.is_initialized()):
+        print("⚠️ 警告：DataLoader创建时分布式环境未初始化")
+        print("   这可能导致batch size计算不准确")
+    
     # 创建数据加载器 - 只传递config参数
     train_loader, val_loader = create_dataloaders(config)
     
@@ -107,6 +113,19 @@ def main():
     
     # 设置随机种子
     set_random_seeds(args.seed)
+    
+    # 🔥 修复：添加分布式初始化，确保分布式环境正确设置
+    # 设置端口配置，避免端口冲突
+    if 'MASTER_PORT' not in os.environ:
+        os.environ['MASTER_PORT'] = '29501'  # 使用29501端口，避免29500冲突
+    if 'MASTER_ADDR' not in os.environ:
+        os.environ['MASTER_ADDR'] = 'localhost'
+    
+    # 初始化分布式环境 (DeepSpeed会处理这个)
+    deepspeed.init_distributed()
+    
+    if is_main_process():
+        print("✅ 分布式环境初始化完成")
     
     # 只在主进程中加载和准备配置
     with open(args.config, 'r', encoding='utf-8') as f:
