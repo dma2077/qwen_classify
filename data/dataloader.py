@@ -82,11 +82,33 @@ def create_dataloaders(config):
         if not train_jsonl or not val_jsonl:
             raise ValueError("请在配置中提供 train_jsonl_list/val_jsonl_list 或 train_jsonl/val_jsonl")
         
-        # 构造训练数据集，传递数据集配置
-        train_dataset = MyFoodDataset(train_jsonl, dataset_configs=dataset_configs)
+        # 获取评估配置
+        eval_config = config.get('training', {}).get('evaluation', {})
+        use_partial_eval = eval_config.get('partial_eval_during_training', True)
         
-        # 构造验证数据集，传递数据集配置
-        val_dataset = MyFoodDataset(val_jsonl, dataset_configs=dataset_configs)
+        # 🔥 修复：单文件模式也使用MultiDatasetLoader来支持eval_ratio
+        # 构造训练数据集
+        train_dataset = MultiDatasetLoader(
+            jsonl_file_list=[train_jsonl],
+            dataset_configs=dataset_configs,
+            shuffle_datasets=shuffle_datasets,
+            eval_ratios=eval_ratios,
+            is_eval=False,
+            use_partial_eval=False  # 训练时总是使用全部数据
+        )
+        
+        # 构造验证数据集（使用部分评估）
+        val_dataset = MultiDatasetLoader(
+            jsonl_file_list=[val_jsonl],
+            dataset_configs=dataset_configs,
+            shuffle_datasets=False,  # 验证时不shuffle
+            eval_ratios=eval_ratios,
+            is_eval=True,
+            use_partial_eval=use_partial_eval
+        )
+        
+        # 保存原始文件列表，用于完整评估
+        val_dataset._original_file_list = [val_jsonl]
     
     train_collate_fn = create_collate_fn(processor)
     val_collate_fn = create_collate_fn(processor)

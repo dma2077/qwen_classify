@@ -1,0 +1,80 @@
+model:
+  pretrained_name: "/llm_reco/dehua/model/Qwen2.5-VL-7B-Instruct"
+  num_labels: 101
+
+# 损失函数配置
+loss:
+  type: "cross_entropy"
+
+# 数据集配置
+datasets:
+  dataset_configs:
+    food101:
+      num_classes: 101
+      description: "Food-101 dataset"
+      eval_ratio: 0.2
+  enable_logits_masking: false
+  shuffle_datasets: false
+
+data:
+  train_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_train.jsonl"
+  val_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food101_test.jsonl"
+
+training:
+  epochs: 1  # 只训练1个epoch用于测试
+  lr: 1e-5
+  weight_decay: 0.01
+  warmup_steps: 10
+  output_dir: "/tmp/test_skip_evaluation_priority"
+  logging_steps: 5
+  save_steps: 20
+  eval_steps: 10
+  save_hf_format: true
+  save_deepspeed_format: false
+  
+  # 🔥 测试：skip_evaluation 设为 true (最高优先级)
+  skip_evaluation: true
+  
+  # 🔥 测试：故意设置冲突的参数，应该被skip_evaluation覆盖
+  save_all_checkpoints: false  # 应该被强制设为true
+  
+  # 最佳模型追踪配置 - 应该被强制禁用
+  best_model_tracking:
+    enabled: true              # 应该被强制设为false
+    metric: "overall_accuracy"
+    mode: "max"
+    save_best_only: true       # 应该被强制设为false
+  
+  # 评估配置 - 应该被强制禁用
+  evaluation:
+    partial_eval_during_training: true   # 应该被强制设为false
+    full_eval_at_end: true              # 应该被强制设为false
+    eval_best_model_only: true          # 应该被强制设为false
+
+# 其他配置
+optimizer:
+  type: "adamw"
+  lr: 1e-5
+  weight_decay: 0.01
+
+lr_scheduler:
+  type: "cosine"
+  final_lr_ratio: 0.1
+
+deepspeed:
+  config_path: "configs/ds_s2_as_8.json"
+
+wandb:
+  enabled: false  # 测试时禁用wandb
+  
+# 📋 测试说明：
+# 这个配置文件故意设置了很多与 skip_evaluation=true 冲突的参数
+# 期望结果：
+# 1. best_model_tracking.enabled: true -> false (被强制覆盖)
+# 2. best_model_tracking.save_best_only: true -> false (被强制覆盖)
+# 3. save_all_checkpoints: false -> true (被强制覆盖)
+# 4. evaluation.partial_eval_during_training: true -> false (被强制覆盖)
+# 5. evaluation.full_eval_at_end: true -> false (被强制覆盖)
+# 6. evaluation.eval_best_model_only: true -> false (被强制覆盖)
+# 7. 所有评估步骤都会被跳过
+# 8. 所有checkpoint都会被保存 

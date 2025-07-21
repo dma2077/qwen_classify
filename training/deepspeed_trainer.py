@@ -87,6 +87,53 @@ class DeepSpeedTrainer:
         self.full_eval_at_end = self.eval_config.get('full_eval_at_end', True)
         self.eval_best_model_only = self.eval_config.get('eval_best_model_only', True)
         
+        # 🔥 新增：跳过评估和保存所有checkpoint的配置
+        self.skip_evaluation = self.config.get('training', {}).get('skip_evaluation', False)
+        self.save_all_checkpoints = self.config.get('training', {}).get('save_all_checkpoints', False)
+        
+        # 🔥 skip_evaluation 具有最高优先级，强制覆盖所有相关评估参数
+        if self.skip_evaluation:
+            print("⚠️ 跳过评估模式已启用 (最高优先级)，强制覆盖所有相关参数:")
+            
+            # 强制禁用所有评估相关功能
+            self.best_model_enabled = False
+            self.save_best_only = False
+            self.save_all_checkpoints = True
+            self.partial_eval_during_training = False
+            self.full_eval_at_end = False
+            self.eval_best_model_only = False
+            
+            # 在配置中也强制覆盖，确保一致性
+            if 'training' not in self.config:
+                self.config['training'] = {}
+            if 'best_model_tracking' not in self.config['training']:
+                self.config['training']['best_model_tracking'] = {}
+            if 'evaluation' not in self.config['training']:
+                self.config['training']['evaluation'] = {}
+            
+            # 强制覆盖最佳模型配置
+            self.config['training']['best_model_tracking']['enabled'] = False
+            self.config['training']['best_model_tracking']['save_best_only'] = False
+            self.config['training']['save_all_checkpoints'] = True
+            
+            # 强制覆盖评估配置
+            self.config['training']['evaluation']['partial_eval_during_training'] = False
+            self.config['training']['evaluation']['full_eval_at_end'] = False
+            self.config['training']['evaluation']['eval_best_model_only'] = False
+            
+            print("  • best_model_enabled: False (强制禁用)")
+            print("  • save_best_only: False (强制禁用)")
+            print("  • save_all_checkpoints: True (强制启用)")
+            print("  • partial_eval_during_training: False (强制禁用)")
+            print("  • full_eval_at_end: False (强制禁用)")
+            print("  • eval_best_model_only: False (强制禁用)")
+            print("  💾 将保存所有checkpoint，跳过所有评估步骤")
+        
+        # 如果设置了保存所有checkpoint（且未跳过评估），覆盖save_best_only配置
+        elif self.save_all_checkpoints:
+            self.save_best_only = False
+            print("💾 保存所有checkpoint模式已启用")
+        
         # 缓存MFU计算结果，避免重复计算
         self._mfu_cache = {}
         
@@ -566,12 +613,15 @@ class DeepSpeedTrainer:
             
     def _handle_save_step(self, effective_step):
         """处理保存步骤"""
-        if not self.save_best_only:  # 只有在未启用"仅保存最佳模型"时才保存常规检查点
+        if self.save_all_checkpoints or not self.save_best_only:  # 保存所有checkpoint或未启用"仅保存最佳模型"
             if hasattr(self, 'pbar'):
                 self.pbar.clear()
             self.save_checkpoint(effective_step)
             if hasattr(self, 'pbar'):
                 self.pbar.refresh()
+            if self.save_all_checkpoints and self.dist_ctx.is_main_process:
+                if hasattr(self, 'pbar'):
+                    self.pbar.write(f"💾 保存checkpoint-{effective_step} (保存所有checkpoint模式)")
         elif self.dist_ctx.is_main_process:  # 如果启用了仅保存最佳模型，只显示信息
             if hasattr(self, 'pbar'):
                 self.pbar.write(f"💡 仅保存最佳模型模式已启用，跳过步骤 {effective_step} 的常规检查点保存")
@@ -668,12 +718,14 @@ class DeepSpeedTrainer:
                     self._handle_logging_step(effective_step, aggregated_loss, grad_norm_value, current_lr, 
                                             epoch, batch_idx, inputs, attention_mask)
                 
-                # 定期评估
-                if effective_step > 0 and effective_step % self.config['eval_steps'] == 0:
+                # 定期评估（仅在未跳过评估时执行）
+                if not self.skip_evaluation and effective_step > 0 and effective_step % self.config['eval_steps'] == 0:
                     if self.dist_ctx.is_main_process:
                         print(f"\n🎯 触发评估步骤 (step={effective_step}, eval_steps={self.config['eval_steps']})")
                     self._handle_evaluation_step(effective_step, epoch, aggregated_loss, current_lr, 
                                                grad_norm_value, inputs, attention_mask, step_time)
+                elif self.skip_evaluation and self.dist_ctx.is_main_process and effective_step > 0 and effective_step % self.config['eval_steps'] == 0:
+                    print(f"\n⏭️ 跳过评估步骤 (step={effective_step}, skip_evaluation=True)")
                 
                 # 定期保存检查点
                 if effective_step > 0 and effective_step % self.config['save_steps'] == 0:
@@ -815,32 +867,42 @@ class DeepSpeedTrainer:
 
     def _finish_training(self, effective_step):
         """完成训练"""
-        # 训练结束前进行最终评估
-        if self.dist_ctx.is_main_process:
-            print("\n🎯 训练即将完成，进行最终评估...")
-        eval_loss, eval_accuracy = self.evaluate(step=effective_step)
+        eval_loss, eval_accuracy = 0.0, 0.0
         
-        # 保存最终检查点（如果未启用仅保存最佳模型）
-        if not self.save_best_only:
+        # 训练结束前进行最终评估（仅在未跳过评估时）
+        if not self.skip_evaluation:
+            if self.dist_ctx.is_main_process:
+                print("\n🎯 训练即将完成，进行最终评估...")
+            eval_loss, eval_accuracy = self.evaluate(step=effective_step)
+        else:
+            if self.dist_ctx.is_main_process:
+                print("\n⏭️ 跳过最终评估 (skip_evaluation=True)")
+        
+        # 保存最终检查点
+        if self.save_all_checkpoints or not self.save_best_only:
             if self.dist_ctx.is_main_process:
                 print(f"💾 保存最终检查点...")
             self.save_checkpoint(effective_step)
         elif self.dist_ctx.is_main_process:
             print(f"💡 仅保存最佳模型模式已启用，跳过最终检查点保存")
         
-        # 进行完整评估（在最佳模型上）
-        if self.full_eval_at_end:
+        # 进行完整评估（在最佳模型上，仅在未跳过评估时）
+        if not self.skip_evaluation and self.full_eval_at_end:
             self.full_evaluation_on_best_model()
         
         if self.dist_ctx.is_main_process:
             print("🎉 训练完成！")
-            print(f"📊 最终评估结果 - 损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
-            if self.best_model_enabled:
-                print(f"🏆 最佳模型 - {self.best_metric_name}: {self.best_metric_value:.4f} (步骤 {self.best_model_step})")
-                print(f"🏆 最佳模型路径: {self.best_model_path}")
+            if not self.skip_evaluation:
+                print(f"📊 最终评估结果 - 损失: {eval_loss:.4f}, 准确率: {eval_accuracy:.4f}")
+                if self.best_model_enabled:
+                    print(f"🏆 最佳模型 - {self.best_metric_name}: {self.best_metric_value:.4f} (步骤 {self.best_model_step})")
+                    print(f"🏆 最佳模型路径: {self.best_model_path}")
+            else:
+                print(f"📊 训练完成，已跳过评估")
         
-        # 确保最终评估结果被记录到WandB
-        self._log_final_evaluation(effective_step, eval_loss, eval_accuracy)
+        # 确保最终评估结果被记录到WandB（仅在未跳过评估时）
+        if not self.skip_evaluation:
+            self._log_final_evaluation(effective_step, eval_loss, eval_accuracy)
         
         # 训练结束后进行最终清理
         if self.save_best_only and self.dist_ctx.is_main_process:
@@ -1166,6 +1228,14 @@ class DeepSpeedTrainer:
             log_to_wandb: 是否记录到WandB，默认为True
             return_results: 是否返回详细的评估结果，默认为False
         """
+        # 🔥 skip_evaluation 具有最高优先级，直接返回默认值
+        if self.skip_evaluation:
+            self.dist_ctx.print_main("⏭️ 跳过评估 (skip_evaluation=True，最高优先级)")
+            if return_results:
+                return 0.0, 0.0, {'overall_loss': 0.0, 'overall_accuracy': 0.0}
+            else:
+                return 0.0, 0.0
+        
         current_step = step if step is not None else self.current_step
         
         try:
@@ -1277,8 +1347,8 @@ class DeepSpeedTrainer:
             else:
                 self.dist_ctx.print_main(f"📊 评估完成但未记录到WandB (step=None)")
             
-            # 更新最佳模型 - 只在step不为None时更新
-            if current_step is not None:
+            # 更新最佳模型 - 只在step不为None且未跳过评估时更新
+            if current_step is not None and not self.skip_evaluation:
                 try:
                     eval_results_for_best = {
                         'overall_loss': overall_loss,
@@ -1287,6 +1357,8 @@ class DeepSpeedTrainer:
                     self._update_best_model(eval_results_for_best, current_step)
                 except Exception as best_model_error:
                     self.dist_ctx.print_main(f"⚠️  最佳模型更新失败: {best_model_error}")
+            elif self.skip_evaluation:
+                self.dist_ctx.print_main(f"📊 跳过最佳模型更新 (skip_evaluation=True)")
             else:
                 self.dist_ctx.print_main(f"📊 跳过最佳模型更新 (step=None)")
             
@@ -1306,6 +1378,11 @@ class DeepSpeedTrainer:
     
     def full_evaluation_on_best_model(self):
         """在最佳模型上进行完整评估"""
+        # 🔥 skip_evaluation 具有最高优先级，直接返回
+        if self.skip_evaluation:
+            self.dist_ctx.print_main("⏭️ 跳过最佳模型的完整评估 (skip_evaluation=True)")
+            return
+            
         if not self.full_eval_at_end or not self.best_model_path:
             return
         
