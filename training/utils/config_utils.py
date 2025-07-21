@@ -21,11 +21,9 @@ def prepare_config(config):
     # 🔥 修复：处理字段名映射
     if 'epochs' in training_config and 'num_epochs' not in training_config:
         training_config['num_epochs'] = training_config['epochs']
-        print(f"📋 配置映射: epochs -> num_epochs = {training_config['num_epochs']}")
     
     if 'lr' in training_config and 'learning_rate' not in training_config:
         training_config['learning_rate'] = training_config['lr']
-        print(f"📋 配置映射: lr -> learning_rate = {training_config['learning_rate']}")
     
     # 将常用的配置项提升到根层级，方便访问
     config['logging_steps'] = training_config['logging_steps']
@@ -59,12 +57,6 @@ def prepare_config(config):
     
     # 🔥 新增：验证WandB配置
     wandb_config = config.get('wandb', {})
-    if wandb_config.get('enabled', False):
-        print(f"📋 WandB配置: 已启用")
-        print(f"   📊 项目: {wandb_config.get('project', 'qwen_classification')}")
-        print(f"   🏃 运行名称: {wandb_config.get('run_name', 'auto-generated')}")
-    else:
-        print(f"📋 WandB配置: 禁用")
     
     import os
     # 验证DeepSpeed配置文件是否存在

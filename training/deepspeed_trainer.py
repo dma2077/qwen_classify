@@ -510,10 +510,7 @@ class DeepSpeedTrainer:
                 # 如果步骤时间为0或负数，记录警告
                 if self.dist_ctx.is_main_process:
                     print(f"⚠️ 步骤时间异常，跳过性能指标记录 (step={effective_step}, step_time={step_time})")
-        else:
-            # 调试信息：为什么跳过性能指标
-            if effective_step % 100 == 0:  # 每100步输出一次
-                print(f"⏭️  跳过性能指标记录 (step={effective_step}): 频率检查 {effective_step} % 20 != 0")
+        # 🔥 移除调试输出，避免性能损失
                 
         # 🔥 完全禁用MFU/FLOPs指标验证
         # if self.dist_ctx.is_main_process and effective_step % 100 == 0:
@@ -534,33 +531,38 @@ class DeepSpeedTrainer:
         # 🔥 临时禁用监控器记录以测试性能
         # self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, skip_wandb=is_eval_step)
         
-        # 🔥 修复：确保所有步骤都记录training和perf指标到WandB
-        if self.dist_ctx.is_main_process:
-            # 🔥 大幅减少training指标记录频率以测试性能
-            should_log_training = (effective_step % (self.monitor.freq['training_log_freq'] * 10) == 0)
-            
-            if should_log_training:
-                training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
-                                                           grad_norm_value, inputs, attention_mask, step_time)
-                
-                # 🔥 临时禁用WandB记录以测试性能
-                # self.monitor.log_metrics(training_data, effective_step, commit=True)
-                if self.dist_ctx.is_main_process:
-                    print(f"📊 训练指标 (step={effective_step}): loss={aggregated_loss:.4f}, lr={current_lr:.2e}")
-                
-                # 移除调试输出，减少开销
+        # 🔥 临时完全禁用训练指标构建以测试性能
+        # if self.dist_ctx.is_main_process:
+        #     # 🔥 大幅减少training指标记录频率以测试性能
+        #     should_log_training = (effective_step % (self.monitor.freq['training_log_freq'] * 10) == 0)
+        #     
+        #     if should_log_training:
+        #         training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
+        #                                                    grad_norm_value, inputs, attention_mask, step_time)
+        #         
+        #         # 🔥 临时禁用WandB记录以测试性能
+        #         # self.monitor.log_metrics(training_data, effective_step, commit=True)
+        #         if self.dist_ctx.is_main_process:
+        #             print(f"📊 训练指标 (step={effective_step}): loss={aggregated_loss:.4f}, lr={current_lr:.2e}")
+        #         
+        #         # 移除调试输出，减少开销
+        
+        # 🔥 临时只在特定步骤打印基础信息
+        if self.dist_ctx.is_main_process and effective_step % 10 == 0:
+            print(f"📊 Step {effective_step}: loss={aggregated_loss:.4f}, lr={current_lr:.2e}")
                 
     def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
         """更新进度条"""
         if hasattr(self, 'pbar') and self.dist_ctx.is_main_process:
-            # 🔥 修复：手动设置进度条的位置，而不是update()
-            self.pbar.n = effective_step  # 直接设置当前位置
-            self.pbar.set_postfix({
-                'loss': f'{aggregated_loss:.4f}',
-                'lr': f'{current_lr:.2e}',
-                'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
-            })
-            self.pbar.refresh()  # 强制刷新显示
+            # 🔥 优化：降低进度条更新频率，减少I/O开销
+            if effective_step % 5 == 0:  # 每5步更新一次进度条
+                self.pbar.n = effective_step  # 直接设置当前位置
+                self.pbar.set_postfix({
+                    'loss': f'{aggregated_loss:.4f}',
+                    'lr': f'{current_lr:.2e}',
+                    'epoch': f'{epoch + batch_idx/len(self.train_loader):.2f}'
+                })
+                self.pbar.refresh()  # 强制刷新显示
             
     def _handle_evaluation_step(self, effective_step, epoch, aggregated_loss, current_lr, grad_norm_value, 
                                inputs, attention_mask, step_time):
@@ -746,24 +748,25 @@ class DeepSpeedTrainer:
             if self.dist_ctx.is_main_process:
                 print("🔍 开始遍历训练数据...")
             for batch_idx, batch in enumerate(self.train_loader):
-                if self.dist_ctx.is_main_process:
-                    print(f"🔍 获取到batch {batch_idx}")
+                # 🔥 临时完全移除调试输出以测试性能
+                # if self.dist_ctx.is_main_process:
+                #     print(f"🔍 获取到batch {batch_idx}")
                 batch_start_time = time.time()
                 self.current_step += 1
                 
                 # 移除数据加载时间监控，减少开销
                 
                 # 准备批次数据
-                if self.dist_ctx.is_main_process:
-                    print(f"🔍 准备batch {batch_idx} 数据...")
+                # if self.dist_ctx.is_main_process:
+                #     print(f"🔍 准备batch {batch_idx} 数据...")
                 forward_kwargs, inputs, attention_mask, labels = self._prepare_batch_data(batch)
                 
                 # 移除时间监控，恢复原始性能
-                if self.dist_ctx.is_main_process:
-                    print(f"🔍 开始前向传播 batch {batch_idx}...")
+                # if self.dist_ctx.is_main_process:
+                #     print(f"🔍 开始前向传播 batch {batch_idx}...")
                 outputs = self.model(**forward_kwargs)
-                if self.dist_ctx.is_main_process:
-                    print(f"🔍 前向传播完成 batch {batch_idx}")
+                # if self.dist_ctx.is_main_process:
+                #     print(f"🔍 前向传播完成 batch {batch_idx}")
                 loss = outputs.loss
                 
                 # 反向传播
@@ -794,8 +797,9 @@ class DeepSpeedTrainer:
                 
                 if is_effective_step:
                     effective_step += 1
-                    if self.dist_ctx.is_main_process and effective_step <= 10:
-                        print(f"🎯 有效步骤更新: current_step={self.current_step}, effective_step={effective_step}, gradient_accumulation_steps={stats['gradient_accumulation_steps']}")
+                    # 🔥 临时移除调试输出以测试性能
+                    # if self.dist_ctx.is_main_process and effective_step <= 10:
+                    #     print(f"🎯 有效步骤更新: current_step={self.current_step}, effective_step={effective_step}, gradient_accumulation_steps={stats['gradient_accumulation_steps']}")
                     
                     # 🔥 临时简化步骤时间计算以测试性能
                     step_time = 0.0  # 直接设为0，避免时间计算开销
