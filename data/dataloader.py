@@ -9,8 +9,8 @@ def create_dataloaders(config):
     """创建训练和验证数据加载器，支持多数据集配置"""
     # 从配置中获取参数
     pretrained_model_name = config['model']['pretrained_name']
-    # 🔥 修复：设置合理的num_workers提升数据加载性能
-    num_workers = config['training'].get('num_workers', 4)  # 从0改为4
+    # 直接从配置中读取num_workers，不做额外调整
+    num_workers = config['training'].get('num_workers', 4)
     
     # 获取多数据集配置
     dataset_configs = config.get('datasets', {}).get('dataset_configs', {})

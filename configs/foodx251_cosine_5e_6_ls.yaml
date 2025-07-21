@@ -20,7 +20,6 @@ monitor:
     local_save_freq: 500       # 本地日志保存频率
     progress_update_freq: 50    # 进度更新频率
 
-
 # 单数据集配置
 datasets:
   dataset_configs:
@@ -49,7 +48,7 @@ training:
   eval_steps: 200
   save_hf_format: true
   save_deepspeed_format: false
-  num_workers: 16
+  num_workers: 16  # 恢复原始设置，代码会自动调整
   use_fused_adam: true
   gradient_checkpointing: false
 
