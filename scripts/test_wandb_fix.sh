@@ -2,6 +2,10 @@
 
 # 测试WandB修复的训练脚本
 
+# 🔥 修复NCCL警告：首先设置NCCL_NTHREADS
+export NCCL_NTHREADS=64
+echo "🔧 设置 NCCL_NTHREADS=$NCCL_NTHREADS"
+
 echo "🧪 测试WandB指标记录修复..."
 echo "📊 配置:"
 echo "  • 每步都记录training指标"

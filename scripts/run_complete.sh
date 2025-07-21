@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 配置参数
-CONFIG_FILE="configs/food101_cosine_hold.yaml"
+CONFIG_FILE="configs/food101_cosine_hold_5e_6_ls.yaml"
 DEEPSPEED_CONFIG="configs/ds_s2.json"
 NUM_GPUS=8
 

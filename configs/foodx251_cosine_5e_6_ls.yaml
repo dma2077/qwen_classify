@@ -1,0 +1,86 @@
+model:
+  pretrained_name: "/llm_reco/dehua/model/Qwen2.5-VL-7B-Instruct"
+  num_labels: 251  # Food101的类别数
+
+# 损失函数配置
+# 损失函数配置
+loss:
+  type: "label_smoothing"  # 选项: cross_entropy, focal, label_smoothing, arcface, symmetric_ce
+  smoothing: 0.1
+  temperature: 1.0
+
+# 统一频率设置（推荐且唯一支持的方式）
+monitor:
+  freq:
+    training_log_freq: 20      # 训练指标记录频率
+    eval_log_freq: 1            # 评估指标记录频率
+    perf_log_freq: 50          # 性能指标记录频率
+    gpu_log_freq: 50           # GPU监控频率
+    flops_profile_freq: 50     # MFU计算频率 (使用profiler)
+    local_save_freq: 500       # 本地日志保存频率
+    progress_update_freq: 50    # 进度更新频率
+
+# 单数据集配置
+datasets:
+  dataset_configs:
+    foodx251:
+      num_classes: 251
+      description: "Foodx251 dataset"
+      eval_ratio: 1  # 训练过程中评估20%的数据
+  # 单数据集不需要logits masking
+  enable_logits_masking: false
+  # 单数据集不需要shuffle
+  shuffle_datasets: false
+
+data:
+  # 单数据集使用原始格式
+  train_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/foodx251_train.jsonl"
+  val_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/foodx251_test.jsonl"
+
+training:
+  epochs: 5
+  lr: 5e-6
+  weight_decay: 0.01
+  warmup_steps: 0.1
+  output_dir: "/mmu_mllm_hdd_2/madehua/model/qwen_classify/foodx251_ls_5e_6"
+  logging_steps: 10000
+  save_steps: 200
+  eval_steps: 20
+  save_hf_format: true
+  save_deepspeed_format: false
+  num_workers: 16  # 恢复原始设置，代码会自动调整
+  use_fused_adam: true
+  gradient_checkpointing: false
+
+  # 学习率调度器配置
+  lr_scheduler:
+    type: "cosine"  # 余弦调度器
+    final_lr_ratio: 0.1  # 最终学习率为初始学习率的5% (20倍衰减)
+    num_cycles: 0.5  # 余弦周期数
+  
+  # 最佳模型追踪配置
+  best_model_tracking:
+    enabled: true
+    metric: "overall_accuracy"  # 追踪的指标
+    mode: "max"  # max 或 min
+    save_best_only: true  # 是否只保存最佳模型
+  
+  # 评估配置
+  evaluation:
+    partial_eval_during_training: true  # 训练过程中是否进行部分评估
+    full_eval_at_end: true  # 训练结束后是否进行完整评估
+    eval_best_model_only: true  # 是否只对最佳模型进行完整评估
+
+# Weights & Biases configuration
+wandb:
+  enabled: false
+  project: "qwen_classification"
+  run_name: "foodx251_cosine_5e_6_ls"
+  tags: ["qwen", "deepspeed", "classification", "cosine_hold", "single_dataset"]
+  notes: "Qwen2.5-VL Food101 classification with cosine+hold scheduler"
+  log_dataset_metrics: false  # 单数据集不需要按数据集分组的指标
+  log_overall_metrics: true   # 记录整体指标
+
+# Legacy accelerate settings (for compatibility)
+accelerate:
+  bf16: true 

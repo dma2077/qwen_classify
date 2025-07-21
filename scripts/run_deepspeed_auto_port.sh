@@ -7,6 +7,10 @@ CONFIG_FILE="configs/food2k_cosine_5e_6_ls.yaml"
 DEEPSPEED_CONFIG="configs/ds_s2.json"
 NUM_GPUS=8
 
+# 🔥 修复NCCL警告：首先设置NCCL_NTHREADS
+export NCCL_NTHREADS=64
+echo "🔧 设置 NCCL_NTHREADS=$NCCL_NTHREADS"
+
 # 设置代理（如果需要）
 export http_proxy=http://oversea-squid1.jp.txyun:11080 
 export https_proxy=http://oversea-squid1.jp.txyun:11080

@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Qwen2.5-VL食物分类多GPU训练脚本 (默认8GPU) - 修复端口冲突
+# Qwen2.5-VL食物分类多GPU训练脚本 (默认8GPU)
 
 # 配置参数
-CONFIG_FILE="configs/food2k_cosine_5e_6_ls.yaml"
+CONFIG_FILE="configs/food172_cosine_5e_6_ls.yaml"
 DEEPSPEED_CONFIG="configs/ds_s2.json"
 NUM_GPUS=8
 
@@ -14,19 +14,10 @@ wandb login f3b76ea66a38b2a211dc706fa95b02c761994b73
 
 # 设置Python路径
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-
-# 🔥 修复端口冲突：设置不同的端口
-export MASTER_PORT=29501  # 使用29501端口，避免29500冲突
-export MASTER_ADDR=localhost
-
-# 🔥 修复NCCL警告：设置NCCL_NTHREADS为32的倍数
-export NCCL_NTHREADS=64
-echo "🔧 设置 NCCL_NTHREADS=$NCCL_NTHREADS"
-
+MASTER_PORT=29501
 # 启动多GPU分布式训练
 echo "🔥 启动多GPU分布式训练..."
-echo "📊 使用端口: $MASTER_PORT"
-deepspeed --num_gpus=$NUM_GPUS \
+deepspeed --master_port=$MASTER_PORT --num_gpus=$NUM_GPUS \
     training/train.py \
     --config $CONFIG_FILE \
     --deepspeed_config $DEEPSPEED_CONFIG
