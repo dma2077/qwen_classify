@@ -432,8 +432,8 @@ class DeepSpeedTrainer:
             "step": int(effective_step)
         }
         
-        # 🔥 大幅降低性能指标记录频率，减少开销
-        should_log_perf = (effective_step % 100 == 0)  # 每100步记录一次性能指标
+        # 🔥 优化：进一步降低性能指标记录频率，从每100步改为每200步
+        should_log_perf = (effective_step % 200 == 0)  # 每100步记录一次性能指标
         
         if should_log_perf:
             if step_time > 0:
@@ -528,12 +528,12 @@ class DeepSpeedTrainer:
     def _handle_effective_step(self, effective_step, epoch, batch_idx, aggregated_loss, current_lr, 
                               grad_norm_value, inputs, attention_mask, step_time, is_eval_step):
         """处理有效步骤的逻辑"""
-        # 降低进度条更新频率以减少开销（每10个有效步骤更新一次）
-        if effective_step % 10 == 0:
+        # 🔥 优化：进一步降低进度条更新频率，从每10步改为每20步
+        if effective_step % 20 == 0:
             self._update_progress_bar(effective_step, aggregated_loss, current_lr, epoch, batch_idx)
         
-        # 记录训练指标到本地日志
-        self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, skip_wandb=is_eval_step)
+        # 🔥 临时禁用监控器记录以测试性能
+        # self.monitor.log_step(effective_step, epoch, aggregated_loss, grad_norm_value, current_lr, attention_mask, skip_wandb=is_eval_step)
         
         # 🔥 修复：确保所有步骤都记录training和perf指标到WandB
         if self.dist_ctx.is_main_process:
@@ -544,15 +544,18 @@ class DeepSpeedTrainer:
                 training_data = self._build_training_metrics(effective_step, epoch, aggregated_loss, current_lr, 
                                                            grad_norm_value, inputs, attention_mask, step_time)
                 
-                # 🔥 修复：简化记录逻辑，每个step都记录并commit
-                self.monitor.log_metrics(training_data, effective_step, commit=True)
+                # 🔥 临时禁用WandB记录以测试性能
+                # self.monitor.log_metrics(training_data, effective_step, commit=True)
+                if self.dist_ctx.is_main_process:
+                    print(f"📊 训练指标 (step={effective_step}): loss={aggregated_loss:.4f}, lr={current_lr:.2e}")
                 
                 # 移除调试输出，减少开销
                 
     def _update_progress_bar(self, effective_step, aggregated_loss, current_lr, epoch, batch_idx):
         """更新进度条"""
         if hasattr(self, 'pbar'):
-            self.pbar.update(10)  # 一次更新10步
+            # 🔥 修复：只更新1步，而不是10步
+            self.pbar.update(1)  # 从10改为1
             self.pbar.set_postfix({
                 'loss': f'{aggregated_loss:.4f}',
                 'lr': f'{current_lr:.2e}',
@@ -797,24 +800,25 @@ class DeepSpeedTrainer:
                     self._handle_effective_step(effective_step, epoch, batch_idx, aggregated_loss, current_lr, 
                                               grad_norm_value, inputs, attention_mask, step_time, is_eval_step)
                     
-                    # 🔥 减少日志记录频率以测试性能
-                    if effective_step % (self.config['logging_steps'] * 5) == 0:  # 降低5倍频率
+                    # 🔥 优化：进一步减少日志记录频率，从5倍改为10倍
+                    if effective_step % (self.config['logging_steps'] * 10) == 0:  # 降低10倍频率
                         self._handle_logging_step(effective_step, aggregated_loss, grad_norm_value, current_lr, 
                                                 epoch, batch_idx, inputs, attention_mask)
                     
+                    # 🔥 临时禁用评估以测试性能
                     # 定期评估
-                    if effective_step > 0 and effective_step % self.config['eval_steps'] == 0:
-                        if self.dist_ctx.is_main_process:
-                            print(f"\n🎯 触发评估步骤 (step={effective_step}, eval_steps={self.config['eval_steps']})")
-                        self._handle_evaluation_step(effective_step, epoch, aggregated_loss, current_lr, 
-                                                   grad_norm_value, inputs, attention_mask, step_time)
+                    # if effective_step > 0 and effective_step % self.config['eval_steps'] == 0:
+                    #     if self.dist_ctx.is_main_process:
+                    #         print(f"\n🎯 触发评估步骤 (step={effective_step}, eval_steps={self.config['eval_steps']})")
+                    #     self._handle_evaluation_step(effective_step, epoch, aggregated_loss, current_lr, 
+                    #                                grad_norm_value, inputs, attention_mask, step_time)
                     
                     # 定期保存检查点
                     if effective_step > 0 and effective_step % self.config['save_steps'] == 0:
                         self._handle_save_step(effective_step)
                 
-                # 大幅减少内存操作
-                if batch_idx % 1000 == 0 and torch.cuda.is_available():
+                # 🔥 优化：减少内存清理频率，从每1000个batch改为每2000个batch
+                if batch_idx % 2000 == 0 and torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     
         except Exception as e:

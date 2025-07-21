@@ -9,7 +9,8 @@ def create_dataloaders(config):
     """创建训练和验证数据加载器，支持多数据集配置"""
     # 从配置中获取参数
     pretrained_model_name = config['model']['pretrained_name']
-    num_workers = config['training'].get('num_workers', 0)
+    # 🔥 修复：设置合理的num_workers提升数据加载性能
+    num_workers = config['training'].get('num_workers', 4)  # 从0改为4
     
     # 获取多数据集配置
     dataset_configs = config.get('datasets', {}).get('dataset_configs', {})
@@ -37,12 +38,12 @@ def create_dataloaders(config):
         
         import torch.distributed as dist
         
-        # 🔥 增强：尝试等待分布式初始化完成
-        max_wait_seconds = 10
+        # 🔥 优化：减少等待时间，避免训练延迟
+        max_wait_seconds = 2  # 从10秒减少到2秒
         wait_count = 0
         while not (dist.is_available() and dist.is_initialized()) and wait_count < max_wait_seconds:
             import time
-            time.sleep(0.1)
+            time.sleep(0.05)  # 从0.1秒减少到0.05秒
             wait_count += 1
         
         if dist.is_available() and dist.is_initialized():
@@ -50,6 +51,15 @@ def create_dataloaders(config):
             print(f"🔧 从分布式环境获取GPU数量: {num_gpus}")
             if wait_count > 0:
                 print(f"   ⏱️ 等待了 {wait_count * 0.1:.1f} 秒让分布式初始化完成")
+        else:
+            # 如果分布式未初始化，从DeepSpeed配置反推
+            # train_batch_size = micro_batch_size_per_gpu × num_gpus × gradient_accumulation_steps
+            # 所以 num_gpus = train_batch_size / (micro_batch_size_per_gpu × gradient_accumulation_steps)
+            calculated_num_gpus = total_batch_size // (micro_batch_size_per_gpu * gradient_accumulation_steps)
+            num_gpus = max(1, calculated_num_gpus)  # 至少为1
+            print(f"🔧 从DeepSpeed配置计算GPU数量: {num_gpus}")
+            print(f"   计算公式: {total_batch_size} / ({micro_batch_size_per_gpu} × {gradient_accumulation_steps}) = {num_gpus}")
+            print(f"   ⚠️ 分布式环境未初始化，使用配置反推")
 
         # 评估batch size = micro_batch_size_per_gpu × num_gpus（相当于gradient_accumulation_steps=1时的总batch size）
         eval_batch_size = micro_batch_size_per_gpu * num_gpus
@@ -258,7 +268,7 @@ def create_full_eval_dataloader(config, model_processor=None):
         batch_size=batch_size,
         shuffle=shuffle_val,
         sampler=val_sampler,
-        num_workers=config['training'].get('num_workers', 0),
+        num_workers=config['training'].get('num_workers', 4),  # 从0改为4
         collate_fn=val_collate_fn,
         pin_memory=True,
         drop_last=False

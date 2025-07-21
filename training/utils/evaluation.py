@@ -67,13 +67,13 @@ def evaluate_model(model, val_loader, device) -> Tuple[float, float]:
                 try:
                     batch_count += 1
                     
-                    # 🔥 每20个batch进行同步检查，减少同步频率
-                    if is_distributed and batch_idx % 20 == 0:
-                        try:
-                            dist.barrier()
-                        except Exception as sync_e:
-                            if current_rank == 0:
-                                print(f"⚠️ 第{batch_idx}批次同步失败: {sync_e}")
+                    # 🔥 临时禁用评估中的同步以测试性能
+                    # if is_distributed and batch_idx % 50 == 0:
+                    #     try:
+                    #         dist.barrier()
+                    #     except Exception as sync_e:
+                    #         if current_rank == 0:
+                    #             print(f"⚠️ 第{batch_idx}批次同步失败: {sync_e}")
                     
                     # 移动数据到设备
                     inputs = batch["input_ids"].to(device)
@@ -255,13 +255,13 @@ def evaluate_multi_dataset(model, val_loader, device, dataset_configs=None) -> D
                 try:
                     batch_count += 1
                     
-                    # 🔥 每20个batch进行同步检查
-                    if is_distributed and batch_idx % 20 == 0:
-                        try:
-                            dist.barrier()
-                        except Exception as sync_e:
-                            if current_rank == 0:
-                                print(f"⚠️ 多数据集评估第{batch_idx}批次同步失败: {sync_e}")
+                    # 🔥 临时禁用评估中的同步以测试性能
+                    # if is_distributed and batch_idx % 50 == 0:
+                    #     try:
+                    #         dist.barrier()
+                    #     except Exception as sync_e:
+                    #         if current_rank == 0:
+                    #             print(f"⚠️ 多数据集评估第{batch_idx}批次同步失败: {sync_e}")
                     
                     # 移动数据到设备
                     inputs = batch["input_ids"].to(device)
@@ -445,13 +445,13 @@ def evaluate_single_dataset_fast(model, val_loader, device) -> Tuple[float, floa
                 try:
                     batch_count += 1
                     
-                    # 🔥 每20个batch进行同步检查
-                    if is_distributed and batch_idx % 20 == 0:
-                        try:
-                            dist.barrier()
-                        except Exception as sync_e:
-                            if current_rank == 0:
-                                print(f"⚠️ 第{batch_idx}批次同步失败: {sync_e}")
+                    # 🔥 临时禁用评估中的同步以测试性能
+                    # if is_distributed and batch_idx % 50 == 0:
+                    #     try:
+                    #         dist.barrier()
+                    #     except Exception as sync_e:
+                    #         if current_rank == 0:
+                    #             print(f"⚠️ 第{batch_idx}批次同步失败: {sync_e}")
                     
                     # 移动数据到设备 - 使用non_blocking加速
                     inputs = batch["input_ids"].to(device, non_blocking=True)

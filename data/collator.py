@@ -45,6 +45,7 @@ def create_collate_fn(processor):
                     raise ValueError(f"Image {i} is not a valid PIL Image")
                 valid_images.append(img)
             
+            # 🔥 优化：减少文本长度提升处理速度
             # 对于Qwen2.5-VL，调用processor处理多模态输入
             enc = processor(
                 text=text_list,
@@ -52,7 +53,7 @@ def create_collate_fn(processor):
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=2048  # 限制文本长度
+                max_length=1024  # 从2048减少到1024提升速度
             )
             
             # 确保所有必要的键都存在
