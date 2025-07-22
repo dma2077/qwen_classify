@@ -167,10 +167,11 @@ class DeepSpeedTrainer:
             total_effective_steps = get_total_effective_steps(self.config, train_loader)
             lr_scheduler = create_lr_scheduler(optimizer, self.config, total_effective_steps)
             print(f"🔍 总的有效训练步数: {total_effective_steps}")
+        
         # 获取DeepSpeed配置
         deepspeed_config = self._get_deepspeed_config()
         
-        # 🔍 调试信息：DeepSpeed初始化前的优化器学习率
+        # 🔍 调试信息：DeepSpeed初始化前的优化器学习率（总是显示）
         if self.dist_ctx.is_main_process:
             print(f"🔍 DeepSpeed初始化前优化器学习率:")
             for i, param_group in enumerate(optimizer.param_groups):
@@ -184,11 +185,22 @@ class DeepSpeedTrainer:
             config=deepspeed_config
         )
         
-        # 🔍 调试信息：DeepSpeed初始化后的优化器学习率
+        # 🔍 调试信息：DeepSpeed初始化后的优化器学习率（总是显示）
         if self.dist_ctx.is_main_process:
             print(f"🔍 DeepSpeed初始化后优化器学习率:")
             for i, param_group in enumerate(self.optimizer.param_groups):
                 print(f"  • 参数组 {i}: lr={param_group['lr']}")
+            
+            # 🔍 额外调试：检查学习率调度器类型
+            print(f"🔍 学习率调度器信息:")
+            print(f"  • 类型: {type(self.lr_scheduler)}")
+            if hasattr(self.lr_scheduler, 'get_last_lr'):
+                try:
+                    last_lr = self.lr_scheduler.get_last_lr()
+                    print(f"  • 当前调度器学习率: {last_lr}")
+                except:
+                    print(f"  • 无法获取调度器学习率")
+            
             print(f"✅ 模型初始化完成")
         
         # 设置monitor的model引用用于MFU计算
@@ -705,6 +717,32 @@ class DeepSpeedTrainer:
             if is_effective_step:
                 effective_step += 1
                 
+                # 🔍 调试信息：定期显示学习率详情（前50步每10步显示一次）
+                if self.dist_ctx.is_main_process and effective_step <= 50 and effective_step % 10 == 0:
+                    print(f"🔍 Step {effective_step} 学习率调试:")
+                    print(f"  • 优化器学习率: {current_lr:.2e}")
+                    
+                    # 计算期望的学习率
+                    if hasattr(self.lr_scheduler, 'get_last_lr'):
+                        try:
+                            scheduler_lr = self.lr_scheduler.get_last_lr()[0]
+                            print(f"  • 调度器学习率: {scheduler_lr:.2e}")
+                        except:
+                            print(f"  • 调度器学习率: 无法获取")
+                    
+                    # 手动计算期望学习率（基于warmup逻辑）
+                    base_lr = 5e-6  # 配置中的基础学习率
+                    if effective_step < 25:  # warmup阶段
+                        expected_ratio = effective_step / 25
+                        expected_lr = base_lr * expected_ratio
+                        print(f"  • 期望学习率 (warmup): {expected_lr:.2e} (ratio: {expected_ratio:.3f})")
+                    else:
+                        print(f"  • 期望学习率: >= {base_lr:.2e} (warmup完成)")
+                    
+                    if abs(current_lr - (base_lr * effective_step / 25 if effective_step < 25 else base_lr)) > 1e-7:
+                        print(f"  ⚠️ 学习率不匹配！")
+            
+            if is_effective_step:
                 # 计算步骤时间 - 修复None值问题
                 current_time = time.time()
                 step_start_time = getattr(self.monitor, 'step_start_time', None)
