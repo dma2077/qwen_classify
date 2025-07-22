@@ -86,9 +86,11 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
     train_batch_size = deepspeed_config.get('train_batch_size', 32)
     
-    # 计算有效训练步数（基于DataLoader步数和梯度累积）
-    effective_steps_per_epoch = steps_per_epoch // gradient_accumulation_steps
-    num_training_steps = effective_steps_per_epoch * num_epochs
+    # 🔥 修复：steps_per_epoch已经是基于有效批次大小计算的，不需要再除以gradient_accumulation_steps
+    # 因为DeepSpeed的train_batch_size已经包含了梯度累积信息：
+    # train_batch_size = micro_batch_size_per_gpu × gradient_accumulation_steps × world_size
+    # 所以传入的steps_per_epoch已经是正确的有效训练步数
+    num_training_steps = steps_per_epoch * num_epochs
     
     # 处理warmup_steps：支持绝对值和比例
     num_warmup_steps, warmup_type = _calculate_warmup_steps(warmup_steps_config, num_training_steps)
@@ -121,7 +123,7 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     elif scheduler_type == 'constant':
         return create_constant_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, is_main_process)
     elif scheduler_type == 'cosine_restarts':
-        return create_cosine_restarts_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, effective_steps_per_epoch, is_main_process)
+        return create_cosine_restarts_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, steps_per_epoch, is_main_process)
     else:
         raise ValueError(f"不支持的调度器类型: {scheduler_type}")
 
