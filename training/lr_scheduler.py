@@ -49,7 +49,7 @@ def _calculate_warmup_steps(warmup_config, total_training_steps):
     
     return num_warmup_steps, warmup_type
 
-def create_lr_scheduler(optimizer, config, steps_per_epoch):
+def create_lr_scheduler(optimizer, config, total_effective_steps):
     """创建学习率调度器
     
     支持的调度器类型：
@@ -60,37 +60,32 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
     - exponential: 指数衰减调度器
     - constant: 常数调度器（warmup后保持不变）
     - cosine_restarts: 带重启的余弦调度器
+    
+    Args:
+        optimizer: 优化器
+        config: 训练配置
+        total_effective_steps: 总的有效训练步数（已经考虑了epochs和批次大小）
     """
     # 从配置中获取参数
     training_config = config['training']
     lr_config = training_config.get('lr_scheduler', {})
     scheduler_type = lr_config.get('type', 'cosine')
     warmup_steps_config = training_config['warmup_steps']
-    # 支持epochs和num_epochs两种字段名
-    num_epochs = training_config.get('epochs') or training_config.get('num_epochs')
     
-    # 类型检查和转换
-    if isinstance(num_epochs, str):
-        num_epochs = int(num_epochs)
+    # 直接使用传入的总有效步数
+    num_training_steps = total_effective_steps
     
-    # 计算有效训练步数（考虑DeepSpeed的分布式训练和梯度累积）
-    # 获取DeepSpeed配置
+    # 获取DeepSpeed配置用于显示信息
     deepspeed_config = config.get('deepspeed', {})
     if isinstance(deepspeed_config, str):
         import json
         with open(deepspeed_config, 'r') as f:
             deepspeed_config = json.load(f)
     
-    # 获取DeepSpeed参数
+    # 获取DeepSpeed参数用于显示
     micro_batch_size_per_gpu = deepspeed_config.get('train_micro_batch_size_per_gpu', 1)
     gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 1)
     train_batch_size = deepspeed_config.get('train_batch_size', 32)
-    
-    # 🔥 修复：steps_per_epoch已经是基于有效批次大小计算的，不需要再除以gradient_accumulation_steps
-    # 因为DeepSpeed的train_batch_size已经包含了梯度累积信息：
-    # train_batch_size = micro_batch_size_per_gpu × gradient_accumulation_steps × world_size
-    # 所以传入的steps_per_epoch已经是正确的有效训练步数
-    num_training_steps = steps_per_epoch * num_epochs
     
     # 处理warmup_steps：支持绝对值和比例
     num_warmup_steps, warmup_type = _calculate_warmup_steps(warmup_steps_config, num_training_steps)
@@ -108,6 +103,13 @@ def create_lr_scheduler(optimizer, config, steps_per_epoch):
         print(f"  • Warmup: {num_warmup_steps:,} 步 ({num_warmup_steps/num_training_steps:.1%})")
         print(f"  • 总步数: {num_training_steps:,}")
         print(f"  • 批次大小: {micro_batch_size_per_gpu} x {gradient_accumulation_steps} = {train_batch_size}")
+    
+    # 计算steps_per_epoch用于cosine_restarts调度器
+    training_config = config['training']
+    num_epochs = training_config.get('epochs') or training_config.get('num_epochs')
+    if isinstance(num_epochs, str):
+        num_epochs = int(num_epochs)
+    steps_per_epoch = num_training_steps // num_epochs if num_epochs > 0 else num_training_steps
     
     # 根据调度器类型创建相应的调度器
     if scheduler_type == 'cosine':

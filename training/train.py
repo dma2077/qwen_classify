@@ -227,8 +227,13 @@ def main():
     # 设置优化器
     optimizer = create_optimizer(model, config)
     
-    # 设置学习率调度器
-    lr_scheduler = create_lr_scheduler(optimizer, config, len(train_loader))
+    # 🔥 修复：计算总的有效训练步数给学习率调度器
+    # 直接基于总步数计算，更准确且避免epoch计算误差
+    from training.utils.config_utils import get_total_effective_steps
+    total_effective_steps = get_total_effective_steps(config, train_loader)
+    
+    # 设置学习率调度器 - 直接传入总步数
+    lr_scheduler = create_lr_scheduler(optimizer, config, total_effective_steps)
     
     # 设置训练器
     trainer.setup_model(model, train_loader, val_loader, optimizer, lr_scheduler)

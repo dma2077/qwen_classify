@@ -2,6 +2,90 @@
 训练配置工具函数
 """
 
+def get_effective_steps_per_epoch(config, train_loader):
+    """计算正确的有效训练步数每epoch
+    
+    Args:
+        config: 训练配置
+        train_loader: 训练数据加载器
+        
+    Returns:
+        int: 有效训练步数每epoch
+    """
+    import json
+    
+    # 获取DeepSpeed配置
+    deepspeed_config_path = config.get('deepspeed', '')
+    if not deepspeed_config_path:
+        raise ValueError("DeepSpeed配置文件路径未设置")
+    
+    try:
+        with open(deepspeed_config_path, 'r') as f:
+            deepspeed_config = json.load(f)
+    except Exception as e:
+        raise ValueError(f"DeepSpeed配置文件解析失败: {e}")
+    
+    # 获取关键参数
+    train_batch_size = deepspeed_config.get('train_batch_size', 256)
+    dataset_size = len(train_loader.dataset)
+    
+    # 基于总批次大小计算有效步数
+    effective_steps_per_epoch = dataset_size // train_batch_size
+    if dataset_size % train_batch_size != 0:
+        effective_steps_per_epoch += 1  # 向上取整
+    
+    print(f"📊 步数计算: 数据集大小={dataset_size:,}, 总批次大小={train_batch_size}, 有效步数={effective_steps_per_epoch}")
+    
+    return effective_steps_per_epoch
+
+def get_total_effective_steps(config, train_loader):
+    """计算总的有效训练步数（所有epochs）
+    
+    Args:
+        config: 训练配置
+        train_loader: 训练数据加载器
+        
+    Returns:
+        int: 总的有效训练步数
+    """
+    import json
+    
+    # 获取DeepSpeed配置
+    deepspeed_config_path = config.get('deepspeed', '')
+    if not deepspeed_config_path:
+        raise ValueError("DeepSpeed配置文件路径未设置")
+    
+    try:
+        with open(deepspeed_config_path, 'r') as f:
+            deepspeed_config = json.load(f)
+    except Exception as e:
+        raise ValueError(f"DeepSpeed配置文件解析失败: {e}")
+    
+    # 获取关键参数
+    train_batch_size = deepspeed_config.get('train_batch_size', 256)
+    dataset_size = len(train_loader.dataset)
+    
+    # 获取epochs数
+    training_config = config['training']
+    num_epochs = training_config.get('epochs') or training_config.get('num_epochs')
+    if isinstance(num_epochs, str):
+        num_epochs = int(num_epochs)
+    
+    # 基于总批次大小计算每epoch的有效步数
+    effective_steps_per_epoch = dataset_size // train_batch_size
+    if dataset_size % train_batch_size != 0:
+        effective_steps_per_epoch += 1  # 向上取整
+    
+    # 计算总的有效步数
+    total_effective_steps = effective_steps_per_epoch * num_epochs
+    
+    print(f"📊 总步数计算: 数据集大小={dataset_size:,}, 总批次大小={train_batch_size}")
+    print(f"  • 每epoch有效步数: {effective_steps_per_epoch}")
+    print(f"  • 总epochs: {num_epochs}")
+    print(f"  • 总有效步数: {total_effective_steps}")
+    
+    return total_effective_steps
+
 def prepare_config(config):
     """准备配置参数"""
     # 检查必要的配置

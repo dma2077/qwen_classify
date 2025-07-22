@@ -11,6 +11,7 @@ from .utils.distributed import DistributedContext
 from .utils.evaluation import evaluate_multi_dataset
 from .utils.monitor import TrainingMonitor, make_json_serializable
 from data.dataloader import create_full_eval_dataloader
+from training.utils.config_utils import get_total_effective_steps
 
 class DeepSpeedTrainer:
     def __init__(self, config):
@@ -161,14 +162,10 @@ class DeepSpeedTrainer:
         
         if lr_scheduler is None:
             from training.lr_scheduler import create_lr_scheduler
-            # 计算steps_per_epoch - 基于总批次大小
-            deepspeed_config = self._get_deepspeed_config()
-            train_batch_size = deepspeed_config.get('train_batch_size', 256)
-            dataset_size = len(train_loader.dataset)
-            steps_per_epoch = dataset_size // train_batch_size
-            if dataset_size % train_batch_size != 0:
-                steps_per_epoch += 1  # 向上取整
-            lr_scheduler = create_lr_scheduler(optimizer, self.config, steps_per_epoch)
+            
+            # 🔥 修复：使用总的有效训练步数，而不是每epoch的步数
+            total_effective_steps = get_total_effective_steps(self.config, train_loader)
+            lr_scheduler = create_lr_scheduler(optimizer, self.config, total_effective_steps)
         
         # 获取DeepSpeed配置
         deepspeed_config = self._get_deepspeed_config()
