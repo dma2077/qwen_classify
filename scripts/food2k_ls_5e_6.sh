@@ -19,6 +19,6 @@ MASTER_PORT=29502
 # 启动多GPU分布式训练
 echo "🔥 启动多GPU分布式训练..."
 nohup deepspeed --master_port=$MASTER_PORT --num_gpus=$NUM_GPUS \
-    training/complete_train.py \
+    training/train.py \
     --config $CONFIG_FILE \
     --deepspeed_config $DEEPSPEED_CONFIG > logs/food2k_ls_5e_6.log 2>&1 &
