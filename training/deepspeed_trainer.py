@@ -166,7 +166,7 @@ class DeepSpeedTrainer:
             # 🔥 修复：使用总的有效训练步数，而不是每epoch的步数
             total_effective_steps = get_total_effective_steps(self.config, train_loader)
             lr_scheduler = create_lr_scheduler(optimizer, self.config, total_effective_steps)
-        
+            print(f"🔍 总的有效训练步数: {total_effective_steps}")
         # 获取DeepSpeed配置
         deepspeed_config = self._get_deepspeed_config()
         

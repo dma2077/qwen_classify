@@ -63,7 +63,17 @@ def get_total_effective_steps(config, train_loader):
     
     # 获取关键参数
     train_batch_size = deepspeed_config.get('train_batch_size', 256)
+    micro_batch_size_per_gpu = deepspeed_config.get('train_micro_batch_size_per_gpu', 8)
+    gradient_accumulation_steps = deepspeed_config.get('gradient_accumulation_steps', 4)
     dataset_size = len(train_loader.dataset)
+    
+    # 🔍 调试信息：显示所有关键参数
+    print(f"🔍 DeepSpeed配置调试:")
+    print(f"  • train_batch_size: {train_batch_size}")
+    print(f"  • micro_batch_size_per_gpu: {micro_batch_size_per_gpu}")
+    print(f"  • gradient_accumulation_steps: {gradient_accumulation_steps}")
+    print(f"  • dataset_size: {dataset_size}")
+    print(f"  • len(train_loader): {len(train_loader)}")
     
     # 获取epochs数
     training_config = config['training']
@@ -71,7 +81,9 @@ def get_total_effective_steps(config, train_loader):
     if isinstance(num_epochs, str):
         num_epochs = int(num_epochs)
     
-    # 基于总批次大小计算每epoch的有效步数
+    # 🔥 关键修复：确保使用正确的有效批次大小
+    # DeepSpeed的train_batch_size已经是全局有效批次大小
+    # 不应该再乘以任何梯度累积因子
     effective_steps_per_epoch = dataset_size // train_batch_size
     if dataset_size % train_batch_size != 0:
         effective_steps_per_epoch += 1  # 向上取整
@@ -79,10 +91,19 @@ def get_total_effective_steps(config, train_loader):
     # 计算总的有效步数
     total_effective_steps = effective_steps_per_epoch * num_epochs
     
-    print(f"📊 总步数计算: 数据集大小={dataset_size:,}, 总批次大小={train_batch_size}")
+    print(f"🔍 步数计算调试:")
+    print(f"  • 计算公式: {dataset_size} ÷ {train_batch_size} = {effective_steps_per_epoch}")
     print(f"  • 每epoch有效步数: {effective_steps_per_epoch}")
     print(f"  • 总epochs: {num_epochs}")
     print(f"  • 总有效步数: {total_effective_steps}")
+    
+    # 🔍 验证计算：与DataLoader步数对比
+    dataloader_steps = len(train_loader)
+    expected_ratio = dataloader_steps // effective_steps_per_epoch
+    print(f"🔍 验证信息:")
+    print(f"  • DataLoader步数: {dataloader_steps}")
+    print(f"  • 预期比率(应该等于gradient_accumulation_steps): {expected_ratio}")
+    print(f"  • gradient_accumulation_steps: {gradient_accumulation_steps}")
     
     return total_effective_steps
 
