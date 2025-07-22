@@ -7,11 +7,20 @@ def create_optimizer(model, config):
     lr = training_config.get('lr') or training_config.get('learning_rate')
     weight_decay = training_config['weight_decay']
     
+    # 🔍 调试信息：显示从配置中读取的原始值
+    print(f"🔍 优化器配置调试:")
+    print(f"  • 原始lr值: {lr} (类型: {type(lr)})")
+    print(f"  • 原始weight_decay值: {weight_decay} (类型: {type(weight_decay)})")
+    
     # 确保学习率是数字类型
     if isinstance(lr, str):
         lr = float(lr)
     if isinstance(weight_decay, str):
         weight_decay = float(weight_decay)
+    
+    # 🔍 调试信息：显示类型转换后的值
+    print(f"  • 转换后lr值: {lr} (类型: {type(lr)})")
+    print(f"  • 转换后weight_decay值: {weight_decay} (类型: {type(weight_decay)})")
         
     no_decay = ["bias", "LayerNorm.weight"]
     
@@ -42,5 +51,10 @@ def create_optimizer(model, config):
         }]
     
     optimizer = AdamW(grouped)
+    
+    # 🔍 调试信息：显示创建的优化器的学习率
+    print(f"🔍 优化器创建结果:")
+    for i, param_group in enumerate(optimizer.param_groups):
+        print(f"  • 参数组 {i}: lr={param_group['lr']}, weight_decay={param_group['weight_decay']}")
     
     return optimizer

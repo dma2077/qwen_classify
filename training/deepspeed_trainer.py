@@ -170,6 +170,12 @@ class DeepSpeedTrainer:
         # 获取DeepSpeed配置
         deepspeed_config = self._get_deepspeed_config()
         
+        # 🔍 调试信息：DeepSpeed初始化前的优化器学习率
+        if self.dist_ctx.is_main_process:
+            print(f"🔍 DeepSpeed初始化前优化器学习率:")
+            for i, param_group in enumerate(optimizer.param_groups):
+                print(f"  • 参数组 {i}: lr={param_group['lr']}")
+        
         # 初始化DeepSpeed
         self.model, self.optimizer, _, self.lr_scheduler = deepspeed.initialize(
             model=model,
@@ -178,7 +184,11 @@ class DeepSpeedTrainer:
             config=deepspeed_config
         )
         
+        # 🔍 调试信息：DeepSpeed初始化后的优化器学习率
         if self.dist_ctx.is_main_process:
+            print(f"🔍 DeepSpeed初始化后优化器学习率:")
+            for i, param_group in enumerate(self.optimizer.param_groups):
+                print(f"  • 参数组 {i}: lr={param_group['lr']}")
             print(f"✅ 模型初始化完成")
         
         # 设置monitor的model引用用于MFU计算

@@ -277,6 +277,13 @@ def create_custom_cosine_scheduler(optimizer, num_warmup_steps, num_training_ste
         # 在final_lr_ratio和1.0之间进行余弦衰减
         return final_lr_ratio + (1.0 - final_lr_ratio) * cosine_decay
     
+    # 🔍 调试信息：测试前几步的学习率倍数
+    print(f"🔍 学习率调度器调试 (warmup_steps={num_warmup_steps}):")
+    for test_step in [0, 5, 10, 15, 20, 25, 30]:
+        if test_step <= num_training_steps:
+            lr_ratio = lr_lambda(test_step)
+            print(f"  • Step {test_step:2d}: lr_ratio={lr_ratio:.6f}")
+    
     return LambdaLR(optimizer, lr_lambda)
 
 
