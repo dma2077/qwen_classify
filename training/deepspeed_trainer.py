@@ -741,8 +741,7 @@ class DeepSpeedTrainer:
                     
                     if abs(current_lr - (base_lr * effective_step / 25 if effective_step < 25 else base_lr)) > 1e-7:
                         print(f"  ⚠️ 学习率不匹配！")
-            
-            if is_effective_step:
+                
                 # 计算步骤时间 - 修复None值问题
                 current_time = time.time()
                 step_start_time = getattr(self.monitor, 'step_start_time', None)
