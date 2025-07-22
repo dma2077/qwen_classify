@@ -717,6 +717,14 @@ class DeepSpeedTrainer:
             if is_effective_step:
                 effective_step += 1
                 
+                # 计算步骤时间 - 修复None值问题
+                current_time = time.time()
+                step_start_time = getattr(self.monitor, 'step_start_time', None)
+                if step_start_time is not None:
+                    step_time = current_time - step_start_time
+                else:
+                    step_time = 0.0
+                
                 # 🔍 调试信息：定期显示学习率详情（前50步每10步显示一次）
                 if self.dist_ctx.is_main_process and effective_step <= 50 and effective_step % 10 == 0:
                     print(f"🔍 Step {effective_step} 学习率调试:")
@@ -741,14 +749,6 @@ class DeepSpeedTrainer:
                     
                     if abs(current_lr - (base_lr * effective_step / 25 if effective_step < 25 else base_lr)) > 1e-7:
                         print(f"  ⚠️ 学习率不匹配！")
-                
-                # 计算步骤时间 - 修复None值问题
-                current_time = time.time()
-                step_start_time = getattr(self.monitor, 'step_start_time', None)
-                if step_start_time is not None:
-                    step_time = current_time - step_start_time
-                else:
-                    step_time = 0.0
                 
                 # 判断是否为评估步骤
                 is_eval_step = (effective_step % self.config['eval_steps'] == 0)
