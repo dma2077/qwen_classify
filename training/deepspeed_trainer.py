@@ -671,13 +671,8 @@ class DeepSpeedTrainer:
             self.model.backward(loss)
             epoch_performance['backward_time'] += time.time() - backward_start
             
-            # 聚合多卡loss（在分布式训练中）
-            aggregated_loss = self._aggregate_loss(loss)
-            epoch_loss += aggregated_loss
-            
-            # 优化数据集指标更新 - 降低频率以减少开销
-            if self.enable_dataset_metrics and (self.current_step % 10 == 0):
-                self._update_dataset_metrics(batch, outputs, aggregated_loss)
+            # 累积本地loss（避免每次通信开销）
+            epoch_loss += loss.item()
             
             # 🔥 新增：优化器时间监控
             optimizer_start = time.time()
@@ -694,6 +689,13 @@ class DeepSpeedTrainer:
             
             if is_effective_step:
                 effective_step += 1
+                
+                # 🔥 优化：只在有效步骤时才聚合loss，减少通信开销
+                aggregated_loss = self._aggregate_loss(loss)
+                
+                # 🔥 优化：数据集指标更新使用有效步数
+                if self.enable_dataset_metrics and (effective_step % 10 == 0):
+                    self._update_dataset_metrics(batch, outputs, aggregated_loss)
                 
                 # 计算步骤时间 - 修复None值问题
                 current_time = time.time()
@@ -739,7 +741,27 @@ class DeepSpeedTrainer:
         
         # Epoch结束统计
         epoch_time = time.time() - epoch_start_time
-        avg_loss = epoch_loss / len(self.train_loader)
+        
+        # 🔥 修复：在分布式环境下聚合epoch loss
+        if self.dist_ctx.world_size > 1:
+            # 创建loss tensor用于聚合
+            epoch_loss_tensor = torch.tensor(epoch_loss, dtype=torch.float32, device=self.dist_ctx.device)
+            try:
+                import torch.distributed as dist
+                # 聚合所有GPU的epoch loss
+                dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
+                # 计算平均loss（总loss除以总batch数）
+                total_batches = len(self.train_loader) * self.dist_ctx.world_size
+                avg_loss = epoch_loss_tensor.item() / total_batches
+            except Exception as e:
+                # 聚合失败时使用本地loss
+                avg_loss = epoch_loss / len(self.train_loader)
+                if self.dist_ctx.is_main_process:
+                    print(f"⚠️ Epoch loss聚合失败，使用本地loss: {e}")
+        else:
+            # 单GPU环境直接计算
+            avg_loss = epoch_loss / len(self.train_loader)
+        
         self.monitor.log_epoch(epoch, avg_loss, epoch_time, effective_step)
         
         # 🔥 新增：记录性能统计
@@ -814,6 +836,14 @@ class DeepSpeedTrainer:
         
         # 打印训练配置信息
         self._print_training_config(stats)
+        
+        # 🔥 新增：通信优化说明
+        if self.dist_ctx.is_main_process:
+            print("🚀 通信优化已启用:")
+            print("  • Loss聚合：仅在有效步骤时进行，减少通信开销")
+            print("  • 数据集指标：使用有效步数更新，降低记录频率")
+            print("  • Epoch统计：在epoch结束时统一聚合")
+            print()
         
         # 🔥 初始化FLOPs profiling，确保MFU能够正确记录
         if self.dist_ctx.is_main_process:
