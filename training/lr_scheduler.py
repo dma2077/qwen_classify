@@ -98,12 +98,6 @@ def create_lr_scheduler(optimizer, config, total_effective_steps):
     except ImportError:
         is_main_process = True
     
-    if is_main_process:
-        print(f"📈 学习率调度器: {scheduler_type}")
-        print(f"  • Warmup: {num_warmup_steps:,} 步 ({num_warmup_steps/num_training_steps:.1%})")
-        print(f"  • 总步数: {num_training_steps:,}")
-        print(f"  • 批次大小: {micro_batch_size_per_gpu} x {gradient_accumulation_steps} = {train_batch_size}")
-    
     # 计算steps_per_epoch用于cosine_restarts调度器
     training_config = config['training']
     num_epochs = training_config.get('epochs') or training_config.get('num_epochs')
@@ -135,11 +129,6 @@ def create_cosine_scheduler(optimizer, lr_config, num_warmup_steps, num_training
     num_cycles = lr_config.get('num_cycles', 0.5)
     final_lr_ratio = lr_config.get('final_lr_ratio', 0.0)  # 最终学习率相对于初始学习率的比例
     
-    if is_main_process:
-        print(f"  • 余弦周期数: {num_cycles}")
-        print(f"  • 最终学习率比例: {final_lr_ratio:.1%}")
-        print(f"  • 学习率衰减倍数: {1/final_lr_ratio if final_lr_ratio > 0 else '∞'}x")
-    
     # 如果需要自定义最终学习率比例，使用自定义实现
     if final_lr_ratio != 0.0:
         return create_custom_cosine_scheduler(optimizer, num_warmup_steps, num_training_steps, num_cycles, final_lr_ratio)
@@ -167,10 +156,6 @@ def create_cosine_with_hold_scheduler(optimizer, lr_config, num_warmup_steps, nu
     # 计算各阶段步数
     decay_steps = num_training_steps - num_warmup_steps - hold_steps
     
-    if is_main_process:
-        print(f"  • Hold: {hold_steps:,} 步, Cosine: {decay_steps:,} 步")
-        print(f"  • 最终LR: {final_lr_ratio:.1%}")
-    
     return create_custom_cosine_with_hold_scheduler(
         optimizer, num_warmup_steps, hold_steps, num_training_steps, num_cycles, final_lr_ratio
     )
@@ -179,10 +164,6 @@ def create_cosine_with_hold_scheduler(optimizer, lr_config, num_warmup_steps, nu
 def create_linear_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, is_main_process):
     """创建线性衰减调度器"""
     final_lr_ratio = lr_config.get('final_lr_ratio', 0.0)
-    
-    if is_main_process:
-        print(f"  • 最终学习率比例: {final_lr_ratio:.1%}")
-        print(f"  • 学习率衰减倍数: {1/final_lr_ratio if final_lr_ratio > 0 else '∞'}x")
     
     if final_lr_ratio != 0.0:
         return create_custom_linear_scheduler(optimizer, num_warmup_steps, num_training_steps, final_lr_ratio)
@@ -198,11 +179,6 @@ def create_polynomial_scheduler(optimizer, lr_config, num_warmup_steps, num_trai
     """创建多项式衰减调度器"""
     power = lr_config.get('power', 1.0)
     final_lr_ratio = lr_config.get('final_lr_ratio', 0.0)
-    
-    if is_main_process:
-        print(f"  • 多项式幂次: {power}")
-        print(f"  • 最终学习率比例: {final_lr_ratio:.1%}")
-        print(f"  • 学习率衰减倍数: {1/final_lr_ratio if final_lr_ratio > 0 else '∞'}x")
     
     if final_lr_ratio != 0.0:
         return create_custom_polynomial_scheduler(optimizer, num_warmup_steps, num_training_steps, power, final_lr_ratio)
@@ -227,22 +203,11 @@ def create_exponential_scheduler(optimizer, lr_config, num_warmup_steps, num_tra
         if decay_steps > 0:
             decay_rate = final_lr_ratio ** (1.0 / decay_steps)
     
-    if is_main_process:
-        print(f"  • 指数衰减率: {decay_rate:.6f}")
-        final_ratio = decay_rate ** (num_training_steps - num_warmup_steps)
-        print(f"  • 最终学习率比例: {final_ratio:.1%}")
-        print(f"  • 学习率衰减倍数: {1/final_ratio:.1f}x")
-    
     return create_custom_exponential_scheduler(optimizer, num_warmup_steps, num_training_steps, decay_rate)
 
 
 def create_constant_scheduler(optimizer, lr_config, num_warmup_steps, num_training_steps, is_main_process):
     """创建常数调度器（warmup后保持学习率不变）"""
-    if is_main_process:
-        print(f"  • Warmup后学习率保持不变")
-        print(f"  • 最终学习率比例: 100.0%")
-        print(f"  • 学习率衰减倍数: 1.0x")
-    
     return get_constant_schedule_with_warmup(
         optimizer,
         num_warmup_steps=num_warmup_steps,
@@ -254,11 +219,6 @@ def create_cosine_restarts_scheduler(optimizer, lr_config, num_warmup_steps, num
     restart_period_epochs = lr_config.get('restart_period_epochs', 2)
     restart_period_steps = restart_period_epochs * steps_per_epoch
     final_lr_ratio = lr_config.get('final_lr_ratio', 0.1)
-    
-    if is_main_process:
-        print(f"  • 重启周期: {restart_period_epochs} epochs ({restart_period_steps} steps)")
-        print(f"  • 最终学习率比例: {final_lr_ratio:.1%}")
-        print(f"  • 学习率衰减倍数: {1/final_lr_ratio:.1f}x")
     
     return create_custom_cosine_restarts_scheduler(optimizer, num_warmup_steps, num_training_steps, restart_period_steps, final_lr_ratio)
 
@@ -276,13 +236,6 @@ def create_custom_cosine_scheduler(optimizer, num_warmup_steps, num_training_ste
         
         # 在final_lr_ratio和1.0之间进行余弦衰减
         return final_lr_ratio + (1.0 - final_lr_ratio) * cosine_decay
-    
-    # 🔍 调试信息：测试前几步的学习率倍数
-    print(f"🔍 学习率调度器调试 (warmup_steps={num_warmup_steps}):")
-    for test_step in [0, 5, 10, 15, 20, 25, 30]:
-        if test_step <= num_training_steps:
-            lr_ratio = lr_lambda(test_step)
-            print(f"  • Step {test_step:2d}: lr_ratio={lr_ratio:.6f}")
     
     return LambdaLR(optimizer, lr_lambda)
 
