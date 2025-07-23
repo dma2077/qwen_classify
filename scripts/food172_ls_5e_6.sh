@@ -17,9 +17,7 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 MASTER_PORT=29501
 # 启动多GPU分布式训练
 echo "🔥 启动多GPU分布式训练..."
-deepspeed --master_port=$MASTER_PORT --num_gpus=$NUM_GPUS \
+nohup deepspeed --master_port=$MASTER_PORT --num_gpus=$NUM_GPUS \
     training/train.py \
     --config $CONFIG_FILE \
-    --deepspeed_config $DEEPSPEED_CONFIG
-
-echo "✅ 训练脚本执行完成！" 
+    --deepspeed_config $DEEPSPEED_CONFIG > /llm_reco/dehua/code/qwen_classify/logs/food172_ls_5e_6_epoch_1.log 2>&1 &

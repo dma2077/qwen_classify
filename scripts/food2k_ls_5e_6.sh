@@ -4,7 +4,7 @@
 
 # 配置参数
 CONFIG_FILE="configs/food2k_cosine_5e_6_ls.yaml"
-DEEPSPEED_CONFIG="configs/ds_s2_as_8_bs_64.json"
+DEEPSPEED_CONFIG="configs/ds_s2_as_8.json"
 NUM_GPUS=8
 
 # 设置代理（如果需要）
@@ -21,4 +21,4 @@ echo "🔥 启动多GPU分布式训练..."
 nohup deepspeed --master_port=$MASTER_PORT --num_gpus=$NUM_GPUS \
     training/train.py \
     --config $CONFIG_FILE \
-    --deepspeed_config $DEEPSPEED_CONFIG > logs/food2k_ls_5e_6.log 2>&1 &
+    --deepspeed_config $DEEPSPEED_CONFIG > logs/food2k_ls_5e_6_epoch5.log 2>&1 &

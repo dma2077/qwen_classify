@@ -12,7 +12,7 @@ loss:
 # 统一频率设置（推荐且唯一支持的方式）
 monitor:
   freq:
-    training_log_freq: 20      # 训练指标记录频率
+    training_log_freq: 200      # 训练指标记录频率
     eval_log_freq: 1            # 评估指标记录频率
     perf_log_freq: 200          # 性能指标记录频率
     gpu_log_freq: 200           # GPU监控频率
@@ -27,7 +27,7 @@ datasets:
     food2k:
       num_classes: 2000
       description: "Food2k dataset"
-      eval_ratio: 1  # 训练过程中评估20%的数据
+      eval_ratio: 0.2  # 训练过程中评估20%的数据
   # 单数据集不需要logits masking
   enable_logits_masking: false
   # 单数据集不需要shuffle
@@ -39,14 +39,14 @@ data:
   val_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food2k_test.jsonl"
 
 training:
-  epochs: 1
+  epochs: 5
   lr: 5e-6
   weight_decay: 0.01
   warmup_steps: 0.1
-  output_dir: "/mmu_mllm_hdd_2/madehua/model/qwen_classify/food2k_ls_5e_6"
+  output_dir: "/mmu_mllm_hdd_2/madehua/model/qwen_classify/food2k_ls_5e_6_epoch_5"
   logging_steps: 50000
   save_steps: 1000
-  eval_steps: 20
+  eval_steps: 1000
   save_hf_format: true
   save_deepspeed_format: false
   num_workers: 32

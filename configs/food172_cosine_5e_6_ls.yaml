@@ -12,7 +12,7 @@ loss:
 # 统一频率设置（推荐且唯一支持的方式）
 monitor:
   freq:
-    training_log_freq: 20      # 训练指标记录频率
+    training_log_freq: 100      # 训练指标记录频率
     eval_log_freq: 1            # 评估指标记录频率
     perf_log_freq: 50          # 性能指标记录频率
     gpu_log_freq: 50           # GPU监控频率
@@ -39,7 +39,7 @@ data:
   val_jsonl: "/llm_reco/dehua/code/qwen_classify/data/dataset_food_label/food172_test.jsonl"
 
 training:
-  epochs: 5
+  epochs: 1
   lr: 5e-6
   weight_decay: 0.01
   warmup_steps: 0.1
