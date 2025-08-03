@@ -45,7 +45,7 @@ echo "转换脚本: $CONVERTER_SCRIPT"
 echo "=========================================="
 
 # 查找所有jsonl文件并处理
-for input_file in "$INPUT_DIR"/*.jsonl; do
+for input_file in "$INPUT_DIR"/*8shot.jsonl; do
     # 检查文件是否存在（处理没有匹配文件的情况）
     if [ ! -f "$input_file" ]; then
         echo "警告: 没有找到 .jsonl 文件在 $INPUT_DIR 目录中"
